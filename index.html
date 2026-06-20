@@ -7,9 +7,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="icon" type="image/svg+xml" href="./icon.svg">
-    <link rel="apple-touch-icon" href="./icon.svg">
-    <title id="page-title">School ID Portal</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon-white.svg">
+    <link rel="apple-touch-icon" href="./favicon-white.svg">
+    <title id="page-title">IDentify-DPS</title>
     <!-- External Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -1583,9 +1583,8 @@
 <body class="flex flex-col h-screen">
 
     <div id="initial-splash-screen" class="fixed inset-0 z-[99999] bg-[#f8fafd] flex flex-col items-center justify-center transition-opacity duration-500">
-        <div class="flex items-center gap-3 animate-pulse">
-            <i class="fa-solid fa-id-card text-emerald-600 text-[40px]"></i>
-            <span class="text-[32px] font-black tracking-widest text-emerald-600">IDentify</span>
+        <div class="flex items-center justify-center animate-pulse">
+            <img src="./IDentify Logo.png" class="w-[240px] h-[240px] object-contain">
         </div>
     </div>
 
@@ -1713,7 +1712,7 @@
                         class="h-12 rounded-full flex items-center pl-2 pr-2 gap-2 bg-white"
                         style="box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);">
                         <button id="profile-btn"
-                            class="w-9 h-9 rounded-full bg-emerald-700 text-white flex items-center justify-center font-bold text-xs active:scale-95 transition-transform"
+                            class="w-9 h-9 rounded-full bg-white text-emerald-700 flex items-center justify-center font-bold text-xs active:scale-95 transition-transform overflow-hidden p-0 border-2 border-emerald-600"
                             onclick="openSchoolConfig()">
                             <i class="fa-solid fa-school"></i>
                         </button>
@@ -1744,12 +1743,7 @@
                                 <span class="material-symbols-outlined text-[20px]"
                                     style="font-variation-settings: 'FILL' 1;">verified</span>
                             </button>
-                            <button id="btn-bulk-identify" class="w-10 h-10 shrink-0 rounded-full bg-blue-600 text-white flex items-center justify-center active:scale-90 transition-transform shadow-sm" title="Send to IDentify" onclick="bulkSendToIdentify()">
-                                <i class="fa-solid fa-paper-plane text-sm"></i>
-                            </button>
-                            <button id="btn-bulk-complete" class="hidden w-10 h-10 shrink-0 rounded-full bg-[#05996c] text-white flex items-center justify-center active:scale-90 transition-transform shadow-sm" title="Mark as Completed" onclick="bulkMarkCompleted()">
-                                <i class="fa-solid fa-check-double text-[16px]"></i>
-                            </button>
+
                             <button id="btn-bulk-export" class="hidden w-10 h-10 shrink-0 rounded-full bg-purple-600 text-white flex items-center justify-center active:scale-90 transition-transform shadow-sm" title="Export Selected to ZIP" onclick="bulkExportSelected()">
                                 <i class="fa-solid fa-file-export text-[16px]"></i>
                             </button>
@@ -2151,42 +2145,15 @@
                         throw new Error("Password is required for email login.");
                     }
 
-                    let email = userId;
+                    const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, userId, password);
+                    const user = userCredential.user;
+                    
                     let authUser;
                     
-                    if (email.toLowerCase() === 'admin' || email.toLowerCase() === 'identify.jvd@gmail.com') {
-                        email = "identify.jvd@gmail.com";
-                        const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, email, password);
-                        const user = userCredential.user;
-                        authUser = { userId: 'admin', name: 'Admin', role: 'teacher', viewMode: 'all' };
+                    if (user.email && (user.email.toLowerCase() === 'admin' || user.email.toLowerCase() === 'identify.jvd@gmail.com')) {
+                        authUser = { userId: 'admin', name: 'Admin', role: 'teacher', viewMode: 'all', email: user.email };
                     } else {
-                        // For School Login, first sign in as guest so we have permission to read Firestore
-                        if (!window.auth.currentUser) {
-                             await signInAsSchoolGuest();
-                        }
-                        
-                        // Fetch the latest config from server to ensure we check against the latest password
-                        let latestConfig = schoolConfig;
-                        try {
-                            const docRef = window.firebaseAPI.doc(window.db, "system", "schoolConfig");
-                            const docSnap = await window.firebaseAPI.getDoc(docRef);
-                            if (docSnap.exists()) {
-                                latestConfig = { ...DEFAULT_CONFIG, ...docSnap.data() };
-                                schoolConfig = latestConfig;
-                                localStorage.setItem(CONFIG_KEY, JSON.stringify(schoolConfig));
-                                updateBrandingUI();
-                            }
-                        } catch (e) {
-                            console.warn("Failed to fetch latest config during login:", e);
-                        }
-
-                        if (latestConfig && latestConfig.loginId === userId && latestConfig.loginPassword === password) {
-                             authUser = { userId: latestConfig.loginId, name: latestConfig.name || latestConfig.loginId, role: 'school' };
-                        } else {
-                             // If it fails, sign out from guest so they aren't stuck logged in
-                             await window.auth.signOut();
-                             throw new Error("Invalid User ID or Password. Please check your credentials.");
-                        }
+                        authUser = { userId: user.uid, name: (user.email ? user.email.split('@')[0] : 'School'), role: 'school', email: user.email };
                     }
                     
                     saveAuthUser(authUser);
@@ -2223,15 +2190,8 @@
                 }
 
                 try {
-                    let email = userId;
-                    if (email.toLowerCase() === 'admin') {
-                        email = "identify.jvd@gmail.com";
-                    } else if (!email.includes('@')) {
-                        email = email + "@identify.school";
-                    }
-                    
-                    await window.firebaseAPI.sendPasswordResetEmail(window.auth, email);
-                    alert("A password reset link has been sent to " + email);
+                    await window.firebaseAPI.sendPasswordResetEmail(window.auth, userId);
+                    alert("A password reset link has been sent to " + userId);
                 } catch (error) {
                     if (errorEl) {
                         errorEl.innerText = error.message;
@@ -3073,9 +3033,17 @@
                 applyPendingRecordUpdates();
                 populateFilters();
                 renderHomeAnalysis();
-                filterRecords();
+                
+                if (blankRecordMode === 'none' || blankRecordMode === 'student' || blankRecordMode === 'preview') {
+                    filterRecords();
+                    setupExpandableCards();
+                } else {
+                    const res = filterData(db);
+                    currentRenderedRecords = getSortedRecords(res);
+                    updateFilterCounters(res);
+                }
+                
                 updateBinBadge();
-                setupExpandableCards();
                 lucide.createIcons();
             }
 
@@ -3103,7 +3071,7 @@
             }
 
             // --- SCHOOL CONFIGURATION SYSTEM ---
-            const DEFAULT_CONFIG = { name: 'Delhi Public School', code: 'DPS', about: 'ID Card Management Portal', logo: '' };
+            const DEFAULT_CONFIG = { name: 'Delhi Public School', code: 'DPS', about: 'ID Card Management Portal', logo: './IDentify Logo.png' };
             let schoolConfig = loadSchoolConfig();
 
             function loadSchoolConfig() {
@@ -3113,24 +3081,10 @@
                 } catch (e) { return DEFAULT_CONFIG; }
             }
 
-            async function signInAsSchoolGuest() {
-                const guestEmail = "school_guest@identify.school";
-                const guestPass = "Guest@123456";
-                try {
-                    await window.firebaseAPI.signInWithEmailAndPassword(window.auth, guestEmail, guestPass);
-                } catch (e) {
-                    try {
-                        await window.firebaseAPI.createUserWithEmailAndPassword(window.auth, guestEmail, guestPass);
-                    } catch (e2) {
-                        console.error("Failed to create/sign in guest user", e2);
-                    }
-                }
-            }
-
             async function fetchSystemConfigFromFirebase() {
                 try {
                     if (!window.auth.currentUser) {
-                         await signInAsSchoolGuest();
+                        return; // Cannot fetch without being logged in
                     }
                     const docRef = window.firebaseAPI.doc(window.db, "system", "schoolConfig");
                     const docSnap = await window.firebaseAPI.getDoc(docRef);
@@ -3164,7 +3118,7 @@
                 const codeEl = document.getElementById('config-code'); if (codeEl) codeEl.value = schoolConfig.code;
                 const nameInput = document.getElementById('config-name'); if (nameInput) nameInput.value = schoolConfig.name;
                 const aboutEl = document.getElementById('settings-about-display'); if (aboutEl) aboutEl.innerText = schoolConfig.about;
-                document.title = schoolConfig.name + " - ID Portal";
+                document.title = "IDentify-" + (schoolConfig.code || "DPS");
 
                 if (schoolConfig.logo) {
                     const loginLogo = document.getElementById('login-logo-container');
@@ -3172,15 +3126,9 @@
                     
                     const settingsLogo = document.getElementById('settings-logo-container');
                     if (settingsLogo) settingsLogo.innerHTML = `<img src="${schoolConfig.logo}" class="w-full h-full object-cover">`;
-                    
-                    // Dynamically update favicon
-                    let favicon = document.querySelector("link[rel~='icon']");
-                    if (!favicon) {
-                        favicon = document.createElement('link');
-                        favicon.rel = 'icon';
-                        document.head.appendChild(favicon);
-                    }
-                    favicon.href = schoolConfig.logo;
+
+                    const profileBtn = document.getElementById('profile-btn');
+                    if (profileBtn) profileBtn.innerHTML = `<img src="${schoolConfig.logo}" class="w-full h-full object-cover">`;
 
                     // PWA manifest is now loaded from the fixed manifest.json file
                 }
@@ -3461,8 +3409,7 @@
 
                 db.forEach(x => {
                     const isReturned = (String(x.verified).toLowerCase() === 'returned' || String(x.status).toLowerCase() === 'returned' || x.returned === true || String(x.returned).toLowerCase() === 'true');
-                    const isRecVerified = (x.verified === true || String(x.verified).toLowerCase() === 'true') && !isReturned;
-                    const isRecCompleted = (x.verified === 'Completed') && !isReturned;
+                    const isRecVerified = (x.verified === true || String(x.verified).toLowerCase() === 'true' || x.verified === 'Completed') && !isReturned;
                     const hasAppPhoto = (x.docUrl && x.docUrl.length > 10) || (x.photoData && x.photoData.length > 10) || (x.docFileId && String(x.docFileId).length > 5);
                     
                     if (false) {
@@ -3470,7 +3417,7 @@
                     }
 
                     totalCount++;
-                    if (isRecCompleted) { completedCount++; } else if (isRecVerified) {
+                    if (isRecVerified) {
                         verifiedCount++;
                     } else if (hasAppPhoto) {
                         unverifiedCount++;
@@ -3732,13 +3679,17 @@
                     labelText = 'Form Builder';
                     iconClass = 'fa-solid fa-shapes text-emerald-600';
                 } else if (mode === 'manage_school') {
-                    headerHtml = `<i class="fa-solid fa-school text-[#059669] mr-2.5"></i> Manage Schools`;
-                    labelText = 'Manage Schools';
+                    headerHtml = `<i class="fa-solid fa-school text-[#059669] mr-2.5"></i> Manage School`;
+                    labelText = 'Manage School';
                     iconClass = 'fa-solid fa-school text-emerald-600';
                 } else if (mode === 'dataInfo') {
-                    headerHtml = `<i class="fa-solid fa-chart-simple text-[#059669] mr-2.5"></i> Data Information`;
+                    headerHtml = `<i class="fa-solid fa-database text-[#059669] mr-2.5"></i> Data Information`;
                     labelText = 'Data Information';
-                    iconClass = 'fa-solid fa-chart-simple text-emerald-600';
+                    iconClass = 'fa-solid fa-database text-emerald-600';
+                } else if (mode === 'import_export') {
+                    headerHtml = `<i class="fa-solid fa-right-left text-[#059669] mr-2.5"></i> Import & Export Data`;
+                    labelText = 'Import & Export Data';
+                    iconClass = 'fa-solid fa-right-left text-emerald-600';
                 } else if (mode === 'newEntry' || mode === 'student') {
                     headerHtml = `<i class="fa-solid fa-file-lines text-[#059669] mr-2.5"></i> Student Information Form`;
                     labelText = 'Student Information Form';
@@ -3782,12 +3733,9 @@
             function closeStudentForm() {
                 setBlankRecordMode('none');
                 closeCropModal();
-                // Show records list with filters instead of home dashboard
                 showTab('records');
-                // Ensure filters are visible
                 const filterRow = document.getElementById('class-filter-row');
                 if (filterRow) filterRow.classList.remove('hidden');
-                // Immediately refresh records UI so newly saved record is visible
                 try {
                     renderHomeAnalysis();
                     renderRecords(db || []);
@@ -3806,8 +3754,6 @@
                 
                 try {
                     if (window.google && google.script && google.script.run) {
-                        // GAS Production: Open Google Sheets native high-speed Excel export URL in a new window.
-                        // This bypasses browser sandboxing, never crashes, and downloads the entire sheet natively!
                         google.script.run
                             .withSuccessHandler(function(url) {
                                 hideGlobalLoading();
@@ -3823,7 +3769,6 @@
                             })
                             .getExcelDownloadUrl();
                     } else {
-                        // Local/Dev environment: client-side XLSX generation
                         fb_downloadLocalExcelOnly();
                     }
                 } catch (e) {
@@ -3833,7 +3778,6 @@
                 }
             }
 
-            // Helper to generate and download Excel (.xlsx) locally using SheetJS
             function fb_downloadLocalExcelOnly() {
                 try {
                     const worksheetData = db.map((r, index) => {
@@ -3851,7 +3795,6 @@
                             "Photo Included": (r.photoData && r.photoData.length > 10) ? 'Yes' : 'No'
                         };
                         
-                        // Add custom fields
                         if (Array.isArray(fb_fields)) {
                             fb_fields.forEach((f, idx) => {
                                 const customKey = `customField${idx + 1}`;
@@ -3888,12 +3831,10 @@
                     return;
                 }
 
-                // Ensure forceOpen is strictly a boolean true, not an event object
                 const shouldForce = (forceOpen === true);
 
-                // If it's a manual toggle (event passed) and form is open, CLOSE IT
                 if (!shouldForce && blankRecordMode !== 'none') {
-                    if ((blankRecordMode === 'builder' || blankRecordMode === 'manage_school' || blankRecordMode === 'dataInfo') && typeof previousBlankRecordMode !== 'undefined' && previousBlankRecordMode === 'settings') {
+                    if ((blankRecordMode === 'builder' || blankRecordMode === 'manage_school' || blankRecordMode === 'dataInfo' || blankRecordMode === 'import_export') && typeof previousBlankRecordMode !== 'undefined' && previousBlankRecordMode === 'settings') {
                         setBlankRecordMode('settings');
                         previousBlankRecordMode = 'none';
                         return;
@@ -5327,47 +5268,34 @@
 
                 const count = selectedRecords.size;
 
-                if (count > 0 && (activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed')))) {
+                if (count > 0 && (activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all')))) {
                     if (bulkContainer) bulkContainer.classList.remove('hidden');
                     if (bulkContainer) bulkContainer.classList.add('flex');
                     
                     const verifyBtn = document.getElementById('btn-bulk-verify');
                     const identifyBtn = document.getElementById('btn-bulk-identify');
                     if (verifyBtn) {
-                        if (activeStatusFilter === 'pending' || activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed') {
+                        if (activeStatusFilter === 'pending' || activeStatusFilter === 'verified' || activeStatusFilter === 'all') {
                             verifyBtn.classList.add('hidden');
                         } else {
                             verifyBtn.classList.remove('hidden');
                         }
                     }
-                                        if (identifyBtn) {
-                        if (activeStatusFilter === 'verified') {
-                            identifyBtn.classList.remove('hidden');
-                        } else {
-                            identifyBtn.classList.add('hidden');
-                        }
-                    }
-                    const completeBtn = document.getElementById('btn-bulk-complete');
                     const exportBtn = document.getElementById('btn-bulk-export');
                     const deleteBtn = document.getElementById('btn-bulk-delete');
                     
-                    if (completeBtn) {
-                        if (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all')) {
-                            completeBtn.classList.remove('hidden');
-                            if(identifyBtn) identifyBtn.classList.add('hidden'); // Hide identify in admin mode
-                        } else {
-                            completeBtn.classList.add('hidden');
-                        }
-                    }
-                    
                     if (exportBtn) {
-                        if (activeStatusFilter === 'completed') {
+                        if (currentUser && currentUser.userId === 'admin' && activeStatusFilter === 'verified') {
                             exportBtn.classList.remove('hidden');
-                            if(completeBtn) completeBtn.classList.add('hidden');
-                            if(deleteBtn) deleteBtn.classList.add('hidden');
                         } else {
                             exportBtn.classList.add('hidden');
-                            if(deleteBtn) deleteBtn.classList.remove('hidden');
+                        }
+                    }
+                    if (deleteBtn) {
+                        if (currentUser && currentUser.userId === 'admin') {
+                            deleteBtn.classList.remove('hidden');
+                        } else {
+                            deleteBtn.classList.add('hidden');
                         }
                     }
 
@@ -5525,51 +5453,7 @@
                 }, 'Yes, Send');
             }
 
-            function bulkSendToIdentify() {
-                syncSelectedRecordsSection();
-                if (selectedRecords.size === 0) return;
-                showModal('confirm', 'Send Selected?', `Send ${selectedRecords.size} records to IDentify?`, () => {
-                    let updatedCount = 0;
-                    selectedRecords.forEach(id => {
-                        const idx = db.findIndex(x => String(x.id) === String(id));
-                        if (idx !== -1) {
-                            db[idx].verified = 'Identify';
-                            serverCallSilent('updateRecord', [db[idx]], ()=>{});
-                            updatedCount++;
-                        }
-                    });
-                    
-                    showToast(`${updatedCount} records sent!`);
-                    selectedRecords.clear();
-                    filterRecords();
-                    renderHomeAnalysis();
-                }, 'Yes, Send');
-            }
-
-                        function bulkMarkCompleted() {
-                syncSelectedRecordsSection();
-                if (selectedRecords.size === 0) return;
-                showModal('confirm', 'Mark Completed?', `Mark ${selectedRecords.size} records as Completed?`, () => {
-                    let updatedCount = 0;
-                    selectedRecords.forEach(id => {
-                        const idx = db.findIndex(x => String(x.id) === String(id));
-                        if (idx !== -1) {
-                            db[idx].verified = 'Completed';
-                            serverCallSilent('updateRecord', [db[idx]], ()=>{});
-                            updatedCount++;
-                        }
-                    });
-                    
-                    showToast(`${updatedCount} records marked completed!`);
-                    selectedRecords.clear();
-                    filterRecords();
-                    renderHomeAnalysis();
-                    updateBulkHeader();
-                }, 'Yes, Complete');
-            }
-
-
-            async function bulkExportSelected() {
+                        async function bulkExportSelected() {
                 if (selectedRecords.size === 0) return;
                 
                 showToast("Preparing Export... Please wait.");
@@ -5767,17 +5651,14 @@
                     // Lower threshold (10 instead of 30) to catch all photo types reliably
                     // Robust verification check
                     const isReturned = (String(x.verified).toLowerCase() === 'returned' || String(x.status).toLowerCase() === 'returned' || x.returned === true || String(x.returned).toLowerCase() === 'true');
-                    const isRecVerified = (x.verified === true || String(x.verified).toLowerCase() === 'true') && !isReturned;
-                    const isRecCompleted = (x.verified === 'Completed') && !isReturned;
+                    const isRecVerified = (x.verified === true || String(x.verified).toLowerCase() === 'true' || x.verified === 'Completed') && !isReturned;
                     const hasAppPhoto = (x.docUrl && x.docUrl.length > 10) || (x.photoData && x.photoData.length > 10) || (x.docFileId && String(x.docFileId).length > 5);
 
                     if (currentUser && currentUser.userId === 'admin') {
-                        if (!isRecVerified && !isRecCompleted) return false;
+                        if (!isRecVerified) return false;
                     }
 
-                    if (activeStatusFilter === 'completed') {
-                        matchesStatus = isRecCompleted;
-                    } else if (activeStatusFilter === 'verified') {
+                    if (activeStatusFilter === 'verified') {
                         matchesStatus = isRecVerified;
                     } else if (activeStatusFilter === 'unverified') {
                         matchesStatus = (!isRecVerified && hasAppPhoto) || isReturned;
@@ -6220,14 +6101,11 @@
                             (currentUser && currentUser.userId === 'admin' && rec.verified !== 'Completed' ? `
                             <!-- Admin Verified Actions Bar -->
                             <div class="flex items-center justify-between gap-3 mt-2">
+                                <button onclick="deleteFromPreview()" class="premium-btn-green flex-1 !py-2.5 !rounded-[18px] !bg-rose-500 hover:!bg-rose-600 !border-rose-600 shadow-sm text-[14px] flex items-center justify-center gap-2">
+                                    <i class="fa-solid fa-trash-can"></i> Delete
+                                </button>
                                 <button onclick="editFromPreview()" class="premium-btn-green flex-1 !py-2.5 !rounded-[18px] !bg-blue-600 hover:!bg-blue-700 !border-blue-700 shadow-sm text-[14px] flex items-center justify-center gap-2">
                                     <i class="fa-solid fa-pen-to-square"></i> Edit
-                                </button>
-                                <button onclick="deleteFromPreview()" class="w-[42px] h-[42px] shrink-0 rounded-full bg-rose-500 text-white flex items-center justify-center shadow-sm" title="Delete">
-                                    <i class="fa-solid fa-trash-can text-[15px]"></i>
-                                </button>
-                                <button onclick="completeRecordFromPreview()" class="premium-btn-green flex-1 !py-2.5 !rounded-[18px] shadow-sm text-[14px] flex items-center justify-center gap-2">
-                                    <i class="fa-solid fa-check-double"></i> Complete
                                 </button>
                             </div>
                             ` : ``) : `
@@ -6320,6 +6198,17 @@
                         </div>
 
                         ${(currentUser && currentUser.userId === 'admin') ? `
+                        <div onclick="openImportExportModal()" class="system-card p-5 rounded-2xl flex items-center gap-4 clickable-card hover:border-blue-300 group">
+                            <div class="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
+                                <i class="fa-solid fa-file-import text-xl"></i>
+                            </div>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-black text-slate-800">Import & Export</h4>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Upload or Download Data</p>
+                            </div>
+                            <i class="fa-solid fa-chevron-right text-slate-300 text-xs mr-1 group-hover:text-blue-500 transition-colors"></i>
+                        </div>
+
                         <div onclick="confirmDeleteAllSystemData()" class="system-card p-5 rounded-2xl flex items-center gap-4 clickable-card hover:border-red-300 group">
                             <div class="w-12 h-12 rounded-2xl bg-red-100 flex items-center justify-center text-red-600 group-hover:bg-red-600 group-hover:text-white transition-all shadow-sm">
                                 <i class="fa-solid fa-triangle-exclamation text-xl"></i>
@@ -6360,6 +6249,14 @@
                         const infoEl = document.getElementById('records-page-info');
                         if (countEl) countEl.innerText = `${db.length}`;
                         if (infoEl) infoEl.innerText = 'Page 1 of 1';
+                        lucide.createIcons();
+                        return;
+                    }
+
+                    if (blankRecordMode === 'import_export') {
+                        t.innerHTML = buildImportExportHtml();
+                        const countEl = document.getElementById('showing-count');
+                        if (countEl) countEl.innerText = 'Sync';
                         lucide.createIcons();
                         return;
                     }
@@ -6750,12 +6647,11 @@
                     const hasDoc = hasRecordDocument(x);
                     const isReturned = (x.isDeleted || String(x.verified).toLowerCase() === 'returned' || String(x.status).toLowerCase() === 'returned' || x.returned === true || String(x.returned).toLowerCase() === 'true');
                     const isRecVerified = (x.verified === true || String(x.verified).toLowerCase() === 'true' || x.verified === 'Completed') && !isReturned;
-                    const isRecCompleted = (x.verified === 'Completed') && !isReturned;
                     const photoSrc = fixDriveImageUrl(x.docUrl || x.photoData || '');
                     const syncStatus = x._syncStatus || (x._serverSaved ? 'synced' : '');
                     
                     let syncIconStatusHtml = '';
-                    if (isRecVerified || (isReturned && !x.isDeleted)) {
+                    if (!x.isDeleted && (hasDoc || isRecVerified || isReturned)) {
                         syncIconStatusHtml = `<span class="material-symbols-outlined status-drive-icon ${syncStatus === 'syncing' ? 'syncing' : ''}" style="font-variation-settings: 'FILL' 0;" title="${syncStatus === 'syncing' ? 'Uploading' : 'Synced'}">cloud_upload</span>`;
                     }
 
@@ -6777,20 +6673,18 @@
                 <div class="px-4 flex flex-col items-end justify-center gap-1 min-w-[80px] record-selection-zone" data-id="${x.id}" data-hasdoc="${hasDoc}">
                     <div class="flex items-center gap-2">
                         <div class="text-[12px] font-black text-emerald-600 uppercase tracking-tight">${sanitizeHTML(x.sclass || '-')}</div>
-                        ${((activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed'))) && selectedRecords.size > 0) ? `
+                        ${((activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all'))) && selectedRecords.size > 0) ? `
                         <div class="bulk-cb w-[18px] h-[18px] rounded-md border-2 ${selectedRecords.has(String(x.id)) ? 'bg-emerald-600 border-emerald-600' : 'bg-white border-slate-300'} flex items-center justify-center transition-all" data-id="${x.id}">
                             <i class="${selectedRecords.has(String(x.id)) ? 'fa-solid fa-check text-[10px] text-white' : ''}"></i>
                         </div>
                         ` : ''}
                     </div>
-                    ${(activeStatusFilter !== 'unverified' && activeStatusFilter !== 'pending' || isReturned) ? `
                     <div class="text-[8.5px] font-black uppercase tracking-widest ${isRecVerified ? 'text-emerald-600' : (x.isDeleted ? 'text-red-500' : (isReturned ? 'text-amber-500' : (hasDoc ? 'text-amber-500' : 'text-rose-500')))} flex items-center gap-1">
                         ${x.isDeleted ? '<i class="fa-solid fa-trash-can-arrow-up text-red-500 text-[12px]" title="Deleted by Admin"></i>' : (isReturned ? '<span class="material-symbols-outlined text-[14px] text-amber-500" style="font-variation-settings: \'FILL\' 1;" title="Returned">assignment_return</span>' : '')}
                         ${syncIconStatusHtml}
                         ${isRecVerified ? '<span class="material-symbols-outlined text-[12px]" style="font-variation-settings: \'FILL\' 1;">verified</span>' : ''}
                         ${isRecVerified ? '' : (hasDoc ? '<span class="material-symbols-outlined text-[12px]" style="font-variation-settings: \'FILL\' 1;">unpublished</span>' : '<span class="material-symbols-outlined text-[12px]" style="font-variation-settings: \'FILL\' 1;">no_photography</span>')}
                     </div>
-                    ` : ''}
                 </div>
             </div>`;
                 });
@@ -6840,21 +6734,18 @@
                 if (unverBtn) unverBtn.classList.toggle('active', activeStatusFilter === 'unverified');
                 if (penBtn) penBtn.classList.toggle('active', activeStatusFilter === 'pending');
                 if (allBtn) allBtn.classList.toggle('active', activeStatusFilter === 'all');
-                if (compBtn) compBtn.classList.toggle('active', activeStatusFilter === 'completed');
 
                 // Sync Home chip UI
                 const hAll = document.getElementById('home-btn-all');
                 const hVer = document.getElementById('home-btn-verified');
                 const hUnver = document.getElementById('home-btn-unverified');
                 const hPen = document.getElementById('home-btn-pending');
-                const hComp = document.getElementById('home-btn-completed'); // assuming this ID exists
                 const hCls = document.getElementById('homeFilterClassBtn');
                 
                 if (hVer) hVer.classList.toggle('active', activeStatusFilter === 'verified');
                 if (hUnver) hUnver.classList.toggle('active', activeStatusFilter === 'unverified');
                 if (hPen) hPen.classList.toggle('active', activeStatusFilter === 'pending');
                 if (hAll) hAll.classList.toggle('active', activeStatusFilter === 'all');
-                if (hComp) hComp.classList.toggle('active', activeStatusFilter === 'completed');
                 if (hCls) hCls.classList.toggle('active', activeClassFilter !== 'all');
                 if (clsBtn) clsBtn.classList.toggle('active', activeClassFilter !== 'all');
 
@@ -6875,15 +6766,13 @@
                 let verifiedCount = 0;
                 let unverifiedCount = 0;
                 let pendingCount = 0;
-                let completedCount = 0;
 
                 filteredDb.forEach(r => {
                     const isReturned = (String(r.verified).toLowerCase() === 'returned' || String(r.status).toLowerCase() === 'returned' || r.returned === true || String(r.returned).toLowerCase() === 'true');
-                    const isRecVerified = (r.verified === true || String(r.verified).toLowerCase() === 'true') && !isReturned;
-                    const isRecCompleted = (r.verified === 'Completed') && !isReturned;
+                    const isRecVerified = (r.verified === true || String(r.verified).toLowerCase() === 'true' || r.verified === 'Completed') && !isReturned;
                     const hasAppPhoto = (r.docUrl && r.docUrl.length > 10) || (r.photoData && r.photoData.length > 10) || (r.docFileId && String(r.docFileId).length > 5);
                     
-                    if (isRecCompleted) { completedCount++; } else if (isRecVerified) {
+                    if (isRecVerified) {
                         verifiedCount++;
                     } else if (hasAppPhoto) {
                         unverifiedCount++;
@@ -6912,18 +6801,9 @@
                         }
                     });
                     
-                    // Add Completed chip dynamically if it doesn't exist
+                    // Remove Completed chip dynamically if it exists from previous state
                     let completedRow = document.getElementById('btn-completed');
-                    if (completedRow) completedRow.style.display = 'inline-flex';
-                    if (!completedRow) {
-                        const btnVerified = document.getElementById('btn-verified');
-                        if (btnVerified) {
-                            btnVerified.insertAdjacentHTML('afterend', `<button id="btn-completed" class="school-filter-btn shrink-0 flex items-center gap-1" onclick="setChipFilter('status', 'completed')" title="Completed"><span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">task_alt</span> COMPLETED (${completedCount})</button>`);
-                        }
-                    } else {
-                        completedRow.innerHTML = `<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">task_alt</span> COMPLETED (${completedCount})`;
-                        if (activeStatusFilter === 'completed') completedRow.classList.add('active'); else completedRow.classList.remove('active');
-                    }
+                    if (completedRow) completedRow.style.display = 'none';
                 } else {
                     let completedRow = document.getElementById('btn-completed');
                     if (completedRow) completedRow.style.display = 'none';
@@ -7565,7 +7445,7 @@
                 _lpTimer = setTimeout(() => {
                     _lpDidTrigger = true;
                     if (navigator.vibrate) navigator.vibrate(50);
-                    if (activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed'))) {
+                    if (activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all'))) {
                         toggleRecordSelection(id, null);
                     }
                 }, 500); // 500ms long press
@@ -7581,7 +7461,7 @@
                     _lpDidTrigger = false;
                     return;
                 }
-                if ((activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed'))) && selectedRecords.size > 0) {
+                if ((activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all'))) && selectedRecords.size > 0) {
                     toggleRecordSelection(id, null);
                 } else {
                     openStudentDetailPopup(id, false, !hasDoc);
@@ -9343,6 +9223,393 @@
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js');
         }
+    </script>
+    <script>
+    let ie_importParsedData = [];
+    let ie_importHeaders = [];
+
+    function buildImportExportHtml() {
+        return `
+            <div class="p-6 bg-white rounded-3xl system-card flex flex-col items-start w-full max-w-md mx-auto mb-20">
+                <div class="w-full space-y-4">
+                    <!-- Tabs -->
+                    <div class="flex gap-2 w-full mb-6">
+                        <button onclick="ie_switchTab('export')" id="ie-tab-export" class="h-9 px-4 rounded-xl bg-emerald-600 text-white font-black text-[11px] uppercase tracking-widest hover:bg-emerald-700 transition flex items-center justify-center gap-2 active:scale-95 shadow-sm flex-1"><i class="fa-solid fa-download"></i> Export Data</button>
+                        <button onclick="ie_switchTab('import')" id="ie-tab-import" class="h-9 px-4 rounded-xl bg-slate-100 text-slate-500 font-black text-[11px] uppercase tracking-widest hover:bg-slate-200 transition flex items-center justify-center gap-2 active:scale-95 flex-1"><i class="fa-solid fa-upload"></i> Import Data</button>
+                    </div>
+
+                    <!-- Export Tab Content -->
+                    <div id="ie-content-export" class="space-y-4 block w-full">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm w-full">
+                            <h3 class="text-[11px] font-black text-slate-800 mb-3 uppercase tracking-wider flex items-center gap-2"><i class="fa-solid fa-table-columns text-blue-500"></i> Select Fields to Export</h3>
+                            <div id="ie-export-fields-grid" class="grid grid-cols-2 gap-2">
+                                <!-- Injected by JS -->
+                            </div>
+                        </div>
+                        
+                        <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-4 w-full">
+                            <h3 class="text-[11px] font-black text-slate-800 mb-2 uppercase tracking-wider flex items-center gap-2"><i class="fa-solid fa-sliders text-blue-500"></i> Advanced Options</h3>
+                            
+                            <label class="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50 cursor-pointer hover:bg-blue-50 transition w-full">
+                                <input type="checkbox" id="ie-export-photos" class="w-4 h-4 accent-blue-600">
+                                <div class="flex-1">
+                                    <p class="text-[13px] font-bold text-slate-800">Include Photos</p>
+                                    <p class="text-[10px] text-slate-500 leading-tight mt-0.5">Downloads images into a separate folder</p>
+                                </div>
+                            </label>
+                            
+                            <label class="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50 cursor-pointer hover:bg-blue-50 transition w-full">
+                                <input type="checkbox" id="ie-export-qr" onchange="ie_toggleExportQrFields()" class="w-4 h-4 accent-blue-600">
+                                <div class="flex-1">
+                                    <p class="text-[13px] font-bold text-slate-800">Generate QR Codes</p>
+                                    <p class="text-[10px] text-slate-500 leading-tight mt-0.5">Creates QR code images for each record</p>
+                                </div>
+                            </label>
+                            
+                            <div id="ie-export-qr-options" class="hidden pl-8 pr-3 py-3 mt-2 border-l-2 border-blue-200 w-full">
+                                <p class="text-[10px] font-bold text-slate-600 mb-2 uppercase tracking-wider">Select QR Data Fields</p>
+                                <div id="ie-export-qr-fields-grid" class="grid grid-cols-2 gap-2">
+                                    <!-- Injected by JS -->
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button onclick="ie_runExport()" id="ie-btn-export" class="w-full py-3.5 rounded-xl bg-blue-600 text-white font-black text-[13px] uppercase tracking-widest hover:bg-blue-700 transition active:scale-[0.98] shadow-md flex items-center justify-center gap-2 mt-2">
+                            <i class="fa-solid fa-download"></i> Export Now
+                        </button>
+                    </div>
+
+                    <!-- Import Tab Content -->
+                    <div id="ie-content-import" class="space-y-4 hidden w-full">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm w-full">
+                            <h3 class="text-[11px] font-black text-slate-800 mb-3 uppercase tracking-wider flex items-center gap-2"><i class="fa-solid fa-file-excel text-emerald-500"></i> Upload Excel File</h3>
+                            <label class="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center justify-center cursor-pointer hover:bg-emerald-100 transition group w-full text-center gap-3">
+                                <i class="fa-solid fa-cloud-arrow-up text-emerald-600 text-lg"></i>
+                                <span class="text-xs font-bold text-slate-700">Select File</span>
+                                <input type="file" id="ie-import-file" accept=".xlsx, .xls" class="hidden" onchange="ie_handleFileUpload(event)">
+                            </label>
+                            <div id="ie-import-file-details" class="hidden mt-3 p-3 bg-slate-50 rounded-xl border border-slate-100 relative group">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <i class="fa-solid fa-file-excel text-emerald-500 text-sm"></i>
+                                    <p id="ie-import-filename" class="text-xs font-bold text-slate-800 truncate pr-6"></p>
+                                </div>
+                                <div class="flex justify-between items-center text-[10px] text-slate-500 font-medium pl-6">
+                                    <span id="ie-import-filesize"></span>
+                                    <span id="ie-import-rowcount" class="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold"></span>
+                                </div>
+                                <button type="button" onclick="ie_removeImportFile()" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-red-100 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all shadow-sm" title="Remove File">
+                                    <i class="fa-solid fa-xmark text-xs"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div id="ie-import-mapping-container" class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hidden w-full">
+                            <h3 class="text-[11px] font-black text-slate-800 mb-1.5 uppercase tracking-wider flex items-center gap-2"><i class="fa-solid fa-list-check text-emerald-500"></i> Select Columns to Import</h3>
+                            <p class="text-[10px] text-slate-500 mb-3 leading-tight">We found these columns in your Excel file. Select the ones you want to import.</p>
+                            
+                            <div id="ie-import-columns-grid" class="grid grid-cols-2 gap-2">
+                                <!-- Injected by JS -->
+                            </div>
+                        </div>
+                        
+                        <button onclick="ie_runImport()" id="ie-btn-import" class="w-full py-3.5 rounded-xl bg-emerald-600 text-white font-black text-[13px] uppercase tracking-widest hover:bg-emerald-700 transition active:scale-[0.98] shadow-md flex items-center justify-center gap-2 hidden mt-2">
+                            <i class="fa-solid fa-upload"></i> Import Now
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function openImportExportModal() {
+        setBlankRecordMode('import_export');
+        setTimeout(ie_renderExportFields, 50);
+    }
+    
+    function closeImportExportModal() {
+        // Obsolete, clicking back button handles it
+    }
+    
+    function ie_switchTab(tab) {
+        if(tab === 'export') {
+            document.getElementById('ie-tab-export').className = 'h-9 px-4 rounded-xl bg-emerald-600 text-white font-black text-[11px] uppercase tracking-widest hover:bg-emerald-700 transition flex items-center justify-center gap-2 active:scale-95 shadow-sm flex-1';
+            document.getElementById('ie-tab-import').className = 'h-9 px-4 rounded-xl bg-slate-100 text-slate-500 font-black text-[11px] uppercase tracking-widest hover:bg-slate-200 transition flex items-center justify-center gap-2 active:scale-95 flex-1';
+            document.getElementById('ie-content-export').classList.remove('hidden');
+            document.getElementById('ie-content-export').classList.add('block');
+            document.getElementById('ie-content-import').classList.add('hidden');
+            document.getElementById('ie-content-import').classList.remove('block');
+        } else {
+            document.getElementById('ie-tab-import').className = 'h-9 px-4 rounded-xl bg-emerald-600 text-white font-black text-[11px] uppercase tracking-widest hover:bg-emerald-700 transition flex items-center justify-center gap-2 active:scale-95 shadow-sm flex-1';
+            document.getElementById('ie-tab-export').className = 'h-9 px-4 rounded-xl bg-slate-100 text-slate-500 font-black text-[11px] uppercase tracking-widest hover:bg-slate-200 transition flex items-center justify-center gap-2 active:scale-95 flex-1';
+            document.getElementById('ie-content-import').classList.remove('hidden');
+            document.getElementById('ie-content-import').classList.add('block');
+            document.getElementById('ie-content-export').classList.add('hidden');
+            document.getElementById('ie-content-export').classList.remove('block');
+        }
+    }
+    
+    function ie_renderExportFields() {
+        const grid = document.getElementById('ie-export-fields-grid');
+        const qrGrid = document.getElementById('ie-export-qr-fields-grid');
+        let html = '';
+        let qrHtml = `<label class="flex items-center gap-2 p-2 bg-white rounded border border-slate-200 cursor-pointer hover:bg-blue-50"><input type="checkbox" value="id" class="ie-qr-cb accent-blue-600 w-3.5 h-3.5" checked><span class="text-[10px] font-bold text-slate-700 truncate">System ID</span></label>`;
+        
+        fb_form_order.forEach(id => {
+            let f = null;
+            let label = '';
+            if (FB_STANDARD_FIELDS.some(sf => sf.id === id)) {
+                const stdField = FB_STANDARD_FIELDS.find(sf => sf.id === id);
+                if (!fb_standard_config[id] || fb_standard_config[id].enabled) {
+                    f = stdField;
+                    label = fb_getStandardLabel(id, stdField.label);
+                }
+            } else {
+                f = fb_fields.find(cf => cf.id === id);
+                if (f) label = f.label;
+            }
+            if (f && f.type !== 'section' && f.type !== 'image' && f.id !== 'photo') {
+                html += `<label class="flex items-center gap-2 p-3 bg-white rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50"><input type="checkbox" value="${f.id}" class="ie-export-cb accent-blue-600 w-4 h-4" checked><span class="text-xs font-bold text-slate-700 truncate">${label}</span></label>`;
+                qrHtml += `<label class="flex items-center gap-2 p-2 bg-white rounded border border-slate-200 cursor-pointer hover:bg-blue-50"><input type="checkbox" value="${f.id}" class="ie-qr-cb accent-blue-600 w-3.5 h-3.5"><span class="text-[10px] font-bold text-slate-700 truncate">${label}</span></label>`;
+            }
+        });
+        grid.innerHTML = html;
+        qrGrid.innerHTML = qrHtml;
+    }
+    
+    function ie_toggleExportQrFields() {
+        const qrOpts = document.getElementById('ie-export-qr-options');
+        if (document.getElementById('ie-export-qr').checked) {
+            qrOpts.classList.remove('hidden');
+        } else {
+            qrOpts.classList.add('hidden');
+        }
+    }
+    
+    async function ie_runExport() {
+        const btn = document.getElementById('ie-btn-export');
+        const origHTML = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Preparing...';
+        btn.disabled = true;
+        
+        try {
+            const selectedFields = Array.from(document.querySelectorAll('.ie-export-cb:checked')).map(cb => cb.value);
+            const includePhotos = document.getElementById('ie-export-photos').checked;
+            const includeQr = document.getElementById('ie-export-qr').checked;
+            const qrFields = Array.from(document.querySelectorAll('.ie-qr-cb:checked')).map(cb => cb.value);
+            
+            const zip = new JSZip();
+            const exportData = [];
+            const photoFolder = includePhotos ? zip.folder("Photos") : null;
+            const qrFolder = includeQr ? zip.folder("QR_Codes") : null;
+            
+            for (let i = 0; i < db.length; i++) {
+                const rec = db[i];
+                let row = { 'System ID': rec.id };
+                
+                selectedFields.forEach(id => {
+                    let label = id;
+                    if (FB_STANDARD_FIELDS.some(sf => sf.id === id)) {
+                        label = fb_getStandardLabel(id, FB_STANDARD_FIELDS.find(sf => sf.id === id).label);
+                    } else {
+                        const f = fb_fields.find(cf => cf.id === id);
+                        if (f) label = f.label;
+                    }
+                    row[label] = rec[id] || '';
+                });
+                exportData.push(row);
+                
+                const safeName = ((rec.studentName || rec.name || rec.title || 'Unknown') + '').replace(/[^a-zA-Z0-9]/g, '_');
+                const baseFileName = `${safeName}_${rec.id.substring(rec.id.length - 4)}`;
+                
+                if (includePhotos) {
+                    let photoUrl = rec.docUrl || rec.photoData;
+                    if (photoUrl) {
+                        try {
+                            if (photoUrl.startsWith('data:image')) {
+                                const base64Data = photoUrl.split(',')[1];
+                                photoFolder.file(`Photo_${baseFileName}.jpg`, base64Data, {base64: true});
+                            } else {
+                                photoUrl = fixDriveImageUrl(photoUrl);
+                                const response = await fetch(photoUrl, { mode: 'cors' });
+                                if (response.ok) {
+                                    const blob = await response.blob();
+                                    photoFolder.file(`Photo_${baseFileName}.jpg`, blob);
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                }
+                
+                if (includeQr) {
+                    let qrVal = "";
+                    if (qrFields.length === 1 && qrFields[0] === 'id') {
+                        qrVal = String(rec.id);
+                    } else {
+                        const obj = {};
+                        qrFields.forEach(f => { obj[f] = rec[f] || ""; });
+                        qrVal = JSON.stringify(obj);
+                    }
+                    try {
+                        const qr = new QRious({ value: qrVal, size: 300, level: 'H' });
+                        const qrBase64 = qr.toDataURL().split(',')[1];
+                        qrFolder.file(`QR_${baseFileName}.png`, qrBase64, {base64: true});
+                    } catch(e) {}
+                }
+                
+                // Yield to main thread every 10 records to prevent browser freeze/crash
+                if (i > 0 && i % 10 === 0) {
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+            
+            const ws = XLSX.utils.json_to_sheet(exportData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Exported_Data");
+            const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+            zip.file("Data_Export.xlsx", excelBuffer);
+            
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Zipping...';
+            const content = await zip.generateAsync({type:"blob"});
+            saveAs(content, `System_Export_${new Date().toISOString().split('T')[0]}.zip`);
+            
+            showToast("Export Completed Successfully");
+        } catch(err) {
+            console.error(err);
+            showToast("Error during export: " + err.message, true);
+        } finally {
+            btn.innerHTML = origHTML;
+            btn.disabled = false;
+        }
+    }
+    
+    function ie_removeImportFile() {
+        document.getElementById('ie-import-file').value = '';
+        document.getElementById('ie-import-file-details').classList.add('hidden');
+        document.getElementById('ie-import-mapping-container').classList.add('hidden');
+        document.getElementById('ie-btn-import').classList.add('hidden');
+        document.getElementById('ie-import-columns-grid').innerHTML = '';
+        ie_importParsedData = [];
+        ie_importHeaders = [];
+    }
+    
+    function ie_handleFileUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        document.getElementById('ie-import-filename').textContent = file.name;
+        document.getElementById('ie-import-filesize').textContent = (file.size / 1024).toFixed(1) + ' KB';
+        document.getElementById('ie-import-file-details').classList.remove('hidden');
+        
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            
+            ie_importParsedData = XLSX.utils.sheet_to_json(worksheet, {defval: ""});
+            
+            document.getElementById('ie-import-rowcount').textContent = ie_importParsedData.length + ' Rows';
+            
+            if (ie_importParsedData.length > 0) {
+                ie_importHeaders = Object.keys(ie_importParsedData[0]);
+                let html = '';
+                ie_importHeaders.forEach(h => {
+                    html += `<label class="flex items-center gap-2 p-3 bg-white rounded-xl border border-emerald-200 cursor-pointer hover:bg-emerald-50"><input type="checkbox" value="${h}" class="ie-import-cb accent-emerald-600 w-4 h-4" checked><span class="text-xs font-bold text-slate-700 truncate">${h}</span></label>`;
+                });
+                document.getElementById('ie-import-columns-grid').innerHTML = html;
+                document.getElementById('ie-import-mapping-container').classList.remove('hidden');
+                document.getElementById('ie-btn-import').classList.remove('hidden');
+            } else {
+                showToast("The selected Excel file is empty.", true);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+    
+    async function ie_runImport() {
+        const btn = document.getElementById('ie-btn-import');
+        const origHTML = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importing...';
+        btn.disabled = true;
+        
+        try {
+            const selectedCols = Array.from(document.querySelectorAll('.ie-import-cb:checked')).map(cb => cb.value);
+            if (selectedCols.length === 0) throw new Error("No columns selected for import.");
+            
+            const mapping = {};
+            selectedCols.forEach(col => {
+                const colLower = col.toLowerCase().trim();
+                let matchedId = null;
+                
+                FB_STANDARD_FIELDS.forEach(sf => {
+                    if (sf.label.toLowerCase() === colLower || sf.id.toLowerCase() === colLower) matchedId = sf.id;
+                });
+                
+                if (!matchedId) {
+                    fb_fields.forEach(cf => {
+                        if (cf.label.toLowerCase() === colLower || cf.id.toLowerCase() === colLower) matchedId = cf.id;
+                    });
+                }
+                
+                mapping[col] = matchedId || col.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            });
+            
+            let importCount = 0;
+            const schoolId = currentUser ? currentUser.userId : 'anonymous';
+            const { collection, addDoc } = window.firebaseAPI || {};
+            if (!collection || !addDoc) throw new Error('Firebase functions not initialized properly.');
+            
+            for (let i = 0; i < ie_importParsedData.length; i++) {
+                const row = ie_importParsedData[i];
+                const record = {
+                    createdAt: Date.now(),
+                    schoolId: schoolId,
+                    deviceId: localStorage.getItem('device_id') || 'web-import',
+                    syncStatus: 'synced',
+                    status: 'pending'
+                };
+                
+                let hasPhoto = false;
+                
+                selectedCols.forEach(col => {
+                    const val = row[col];
+                    const sysId = mapping[col];
+                    record[sysId] = val;
+                    
+                    if (sysId === 'photoData' || sysId === 'docUrl' || col.toLowerCase() === 'photo' || col.toLowerCase() === 'image') {
+                        if (val && val.length > 5) {
+                            record.docUrl = val;
+                            hasPhoto = true;
+                        }
+                    }
+                });
+                
+                if (hasPhoto) {
+                    record.status = 'unverified';
+                    record.verified = false; 
+                } else {
+                    record.status = 'pending';
+                }
+                
+                await addDoc(collection(window.firestore, "students"), record);
+                importCount++;
+            }
+            
+            showToast(`Successfully imported ${importCount} records.`);
+            closeImportExportModal();
+            
+            if (typeof loadAllData === 'function') {
+                loadAllData();
+            }
+        } catch(err) {
+            console.error(err);
+            showToast("Error during import: " + err.message, true);
+        } finally {
+            btn.innerHTML = origHTML;
+            btn.disabled = false;
+        }
+    }
     </script>
 </body>
 
