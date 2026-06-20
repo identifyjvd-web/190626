@@ -7,8 +7,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="icon" type="image/svg+xml" href="./favicon-white.svg">
-    <link rel="apple-touch-icon" href="./favicon-white.svg">
+    <link rel="icon" type="image/png" href="./idapplogo.png">
+    <link rel="apple-touch-icon" href="./idapplogo.png">
     <title id="page-title">IDentify-DPS</title>
     <!-- External Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -2145,15 +2145,28 @@
                         throw new Error("Password is required for email login.");
                     }
 
-                    const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, userId, password);
-                    const user = userCredential.user;
+                    let authUser = null;
                     
-                    let authUser;
-                    
-                    if (user.email && (user.email.toLowerCase() === 'admin' || user.email.toLowerCase() === 'identify.jvd@gmail.com')) {
-                        authUser = { userId: 'admin', name: 'Admin', role: 'teacher', viewMode: 'all', email: user.email };
-                    } else {
-                        authUser = { userId: user.uid, name: (user.email ? user.email.split('@')[0] : 'School'), role: 'school', email: user.email };
+                    // Local level school login with hashed password
+                    if (schoolConfig && schoolConfig.loginId && schoolConfig.loginId.toLowerCase() === userId.toLowerCase()) {
+                        const hashedInput = await hashPassword(password);
+                        if (schoolConfig.loginHash && schoolConfig.loginHash === hashedInput) {
+                            authUser = { userId: schoolConfig.loginId, name: schoolConfig.name || 'School', role: 'school', email: schoolConfig.loginId };
+                        } else if (schoolConfig.loginPassword && schoolConfig.loginPassword === password) {
+                            authUser = { userId: schoolConfig.loginId, name: schoolConfig.name || 'School', role: 'school', email: schoolConfig.loginId };
+                        }
+                    }
+
+                    if (!authUser) {
+                        // Fallback to Firebase for Admin/Others
+                        const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, userId, password);
+                        const user = userCredential.user;
+                        
+                        if (user.email && (user.email.toLowerCase() === 'admin' || user.email.toLowerCase() === 'identify.jvd@gmail.com')) {
+                            authUser = { userId: 'admin', name: 'Admin', role: 'teacher', viewMode: 'all', email: user.email };
+                        } else {
+                            authUser = { userId: user.uid, name: (user.email ? user.email.split('@')[0] : 'School'), role: 'school', email: user.email };
+                        }
                     }
                     
                     saveAuthUser(authUser);
@@ -2273,9 +2286,16 @@
                     mobile: mobile,
                     email: email,
                     contactPerson: contactPerson,
-                    loginId: schoolId,
-                    loginPassword: password
+                    loginId: schoolId
                 };
+                delete newConfig.loginPassword; // Ensure plain text password is removed securely
+                
+                if (password) {
+                    newConfig.loginHash = await hashPassword(password);
+                } else if (schoolConfig.loginHash) {
+                    newConfig.loginHash = schoolConfig.loginHash;
+                }
+                
                 if (tempManageSchoolLogo) {
                     newConfig.logo = tempManageSchoolLogo;
                 } else if (tempManageSchoolLogo === '') {
@@ -2299,12 +2319,9 @@
                         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
                     }
 
-                    // Firebase Auth creation has been removed. 
-                    // We now use system/schoolConfig for authentication
-                    
                     setTimeout(() => {
                         tempManageSchoolLogo = null;
-                        showStatusCard('Success', 'School Details & Login Updated Successfully!', { tone: 'success', progress: 100, dismissible: true, autoHideMs: 3000 });
+                        showStatusCard('Success', 'School Details & Local Login Updated Successfully!', { tone: 'success', progress: 100, dismissible: true, autoHideMs: 3000 });
                         if (btn) {
                             btn.disabled = false;
                             btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Details & Access';
@@ -3071,7 +3088,14 @@
             }
 
             // --- SCHOOL CONFIGURATION SYSTEM ---
-            const DEFAULT_CONFIG = { name: 'Delhi Public School', code: 'DPS', about: 'ID Card Management Portal', logo: './IDentify Logo.png' };
+            async function hashPassword(password) {
+                const msgUint8 = new TextEncoder().encode(password);
+                const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            }
+
+            const DEFAULT_CONFIG = { name: 'Delhi Public School', code: 'DPS', about: 'ID Card Management Portal', logo: './idapplogo.png' };
             let schoolConfig = loadSchoolConfig();
 
             function loadSchoolConfig() {
@@ -6326,7 +6350,7 @@
                                         </div>
                                         <div class="relative">
                                             <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Password</label>
-                                            <input type="password" id="new-school-pass" class="w-full rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-purple-400 transition pr-10" placeholder="Password" value="${schoolConfig.loginPassword || ''}">
+                                            <input type="password" id="new-school-pass" class="w-full rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-purple-400 transition pr-10" placeholder="New Password (min 6 chars)">
                                             <button type="button" onclick="toggleManagePassword()" class="absolute right-3 top-[34px] text-slate-400 hover:text-purple-600 transition">
                                                 <i id="manage-pass-icon" class="fa-solid fa-eye text-sm"></i>
                                             </button>
