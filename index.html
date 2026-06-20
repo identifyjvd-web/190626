@@ -1543,8 +1543,9 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
-        import { getAuth, signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, setDoc, onSnapshot, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+        import { getStorage, ref, uploadString, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-storage.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyBOilUISV6aBqxD9bOnMmy-oFDEXSmDX-w",
@@ -1560,12 +1561,14 @@
             const app = initializeApp(firebaseConfig);
             window.db = getFirestore(app);
             window.auth = getAuth(app);
+            window.storage = getStorage(app);
 
             window.firebaseAPI = {
-                initializeApp, getAuth, signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword, signInAnonymously,
-                db: window.db, auth: window.auth, firebaseConfig,
-                collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, setDoc, onSnapshot, getDoc,
+                initializeApp, getAuth, signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword, signInAnonymously, onAuthStateChanged,
+                db: window.db, auth: window.auth, storage: window.storage, firebaseConfig,
+                collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, setDoc, onSnapshot, getDoc, runTransaction,
                 signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, sendPasswordResetEmail, createUserWithEmailAndPassword,
+                getStorage, ref, uploadString, getDownloadURL,
                 firebaseConfig
             };
             console.log("Firebase initialized successfully.");
@@ -1872,7 +1875,10 @@
         </div>
 
         <script>
-
+            function sanitizeHTML(str) {
+                if (str == null) return '';
+                return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+            }
 
             let photoData = null, originalFileName = '', currentFileType = '', pendingUploadedDocument = null, draftServerRecordId = '', db = [], bin = [];
             let isPendingBatch = false;
@@ -1938,7 +1944,7 @@
                     handleFirebaseCall(fn, args, onSuccess, onFailure);
                 } else {
                     if (fn === 'getRecords') setTimeout(() => onSuccess(typeof mockRecords !== 'undefined' ? mockRecords : []), 500);
-                    else setTimeout(() => onSuccess(true), 500);
+                    else setTimeout(() => onFailure(new Error("Firebase is not initialized or offline")), 500);
                 }
             }
             function serverCallSilent(fn, args, onSuccess, onFailure) {
@@ -1988,6 +1994,44 @@
                         });
                         await Promise.all(promises);
                         if (onSuccess) onSuccess(true);
+                    } else if (fn === 'generateId') {
+                        const { runTransaction } = window.firebaseAPI;
+                        if (!runTransaction) throw new Error("runTransaction missing");
+                        const localMaxSn = args[0] || 0;
+                        const counterRef = doc(window.db, "config", "snCounter");
+                        try {
+                            const newSn = await runTransaction(window.db, async (transaction) => {
+                                const sfDoc = await transaction.get(counterRef);
+                                let currentSn = 0;
+                                if (sfDoc.exists()) {
+                                    currentSn = sfDoc.data().value || 0;
+                                }
+                                const nextSn = Math.max(currentSn, localMaxSn) + 1;
+                                transaction.set(counterRef, { value: nextSn }, { merge: true });
+                                return nextSn;
+                            });
+                            if (onSuccess) onSuccess(newSn);
+                        } catch (e) {
+                            if (onFailure) onFailure(e);
+                        }
+                    } else if (fn === 'uploadRecordDocument') {
+                        const { ref, uploadString, getDownloadURL } = window.firebaseAPI;
+                        if (!window.storage) throw new Error("Firebase Storage is not initialized.");
+                        const payload = args[0];
+                        const storageRef = ref(window.storage, `documents/${payload.fileName}`);
+                        await uploadString(storageRef, payload.base64Data, 'base64', {
+                            contentType: payload.mimeType
+                        });
+                        const downloadURL = await getDownloadURL(storageRef);
+                        if (onSuccess) {
+                            onSuccess({
+                                fileId: payload.fileName,
+                                url: downloadURL,
+                                previewUrl: downloadURL,
+                                mimeType: payload.mimeType,
+                                size: 0
+                            });
+                        }
                     } else {
                         if (onSuccess) onSuccess(true);
                     }
@@ -2062,10 +2106,15 @@
             }
             function setupAutoLogoutTracking() {
                 const events = ['click', 'keydown', 'input', 'mousemove', 'touchstart', 'scroll'];
+                let lastResetTime = 0;
                 events.forEach((eventName) => {
                     window.addEventListener(eventName, () => {
                         if (!currentUser) return;
-                        resetAutoLogoutTimer();
+                        const now = Date.now();
+                        if (now - lastResetTime > 2000) {
+                            lastResetTime = now;
+                            resetAutoLogoutTimer();
+                        }
                     }, { passive: true });
                 });
             }
@@ -2375,24 +2424,52 @@
                     });
                 });
             }
+            let appBooted = false;
             function requireLoginAndBoot() {
                 const savedUser = loadAuthUser();
-                if (savedUser) {
-                    currentUser = savedUser;
-                    updateCurrentUserUi();
-                    showLoginOverlay(false);
-                    
-                    // Update Browser Title based on school name
-                    const sc = loadSchoolConfig();
-                    const pref = (sc.name || 'System').split(' ').map(w => w[0]).join('').toUpperCase();
-                    document.title = "IDentify-" + pref;
-
-                    setSyncStatus('Connecting to server...', 5);
-                    loadAllData();
+                
+                if (window.firebaseAPI && window.firebaseAPI.onAuthStateChanged && window.auth) {
+                    window.firebaseAPI.onAuthStateChanged(window.auth, (firebaseUser) => {
+                        if (firebaseUser && savedUser) {
+                            currentUser = savedUser;
+                            updateCurrentUserUi();
+                            showLoginOverlay(false);
+                            
+                            if (!appBooted) {
+                                appBooted = true;
+                                const sc = loadSchoolConfig();
+                                const pref = (sc.name || 'System').split(' ').map(w => w[0]).join('').toUpperCase();
+                                document.title = "IDentify-" + pref;
+                                setSyncStatus('Connecting to server...', 5);
+                                loadAllData();
+                            }
+                        } else {
+                            saveAuthUser(null);
+                            currentUser = null;
+                            updateCurrentUserUi();
+                            showLoginOverlay(true);
+                            if (appBooted) {
+                                window.location.reload();
+                            }
+                        }
+                    });
                 } else {
-                    currentUser = null;
-                    updateCurrentUserUi();
-                    showLoginOverlay(true);
+                    if (savedUser) {
+                        currentUser = savedUser;
+                        updateCurrentUserUi();
+                        showLoginOverlay(false);
+                        
+                        const sc = loadSchoolConfig();
+                        const pref = (sc.name || 'System').split(' ').map(w => w[0]).join('').toUpperCase();
+                        document.title = "IDentify-" + pref;
+
+                        setSyncStatus('Connecting to server...', 5);
+                        loadAllData();
+                    } else {
+                        currentUser = null;
+                        updateCurrentUserUi();
+                        showLoginOverlay(true);
+                    }
                 }
             }
             function logoutUser(isAuto = false) {
@@ -2521,6 +2598,50 @@
                 });
             }
 
+            function setupEventDelegation() {
+                const container = document.getElementById('records-list-container');
+                if (!container) return;
+
+                container.addEventListener('mousedown', handleSelectionZoneEvent);
+                container.addEventListener('touchstart', handleSelectionZoneEvent, {passive: true});
+                container.addEventListener('mouseup', handleSelectionZoneEvent);
+                container.addEventListener('touchend', handleSelectionZoneEvent);
+                container.addEventListener('mouseleave', handleSelectionZoneEvent);
+                container.addEventListener('touchcancel', handleSelectionZoneEvent);
+                container.addEventListener('click', handleContainerClick);
+            }
+
+            function handleSelectionZoneEvent(e) {
+                const zone = e.target.closest('.record-selection-zone');
+                if (!zone) return;
+                const id = zone.dataset.id;
+                const hasDoc = zone.dataset.hasdoc === 'true';
+                
+                if (e.type === 'mousedown' || e.type === 'touchstart') {
+                    lpStart(id, hasDoc);
+                } else if (['mouseup', 'touchend', 'mouseleave', 'touchcancel'].includes(e.type)) {
+                    lpCancel();
+                }
+            }
+
+            function handleContainerClick(e) {
+                const previewZone = e.target.closest('.record-preview-zone');
+                if (previewZone) {
+                    const id = previewZone.dataset.id;
+                    const noDoc = previewZone.dataset.hasdoc === 'true';
+                    openStudentDetailPopup(id, false, noDoc);
+                    return;
+                }
+
+                const selectionZone = e.target.closest('.record-selection-zone');
+                if (selectionZone) {
+                    const id = selectionZone.dataset.id;
+                    const hasDoc = selectionZone.dataset.hasdoc === 'true';
+                    lpClick(id, e, hasDoc);
+                    return;
+                }
+            }
+
             function init() {
                 try {
                     if (typeof lucide !== 'undefined') {
@@ -2543,6 +2664,7 @@
                     setupAutoLogoutTracking();
                     setupLoginUi();
                     setupPullToRefresh();
+                    setupEventDelegation();
 
                     setTimeout(() => {
                         const splash = document.getElementById('initial-splash-screen');
@@ -2757,7 +2879,7 @@
                 }
                 if (!dataUrl) return rec;
                 const payload = dataUrlToUploadPayload(dataUrl, rec.fileName || `${rec.id}_${rec.studentName || 'photo'}.jpg`, rec.docMimeType || 'image/jpeg', `${rec.id}_${rec.studentName || 'photo'}`.replace(/\s+/g, '_'));
-                return new Promise((resolve) => {
+                return new Promise((resolve, reject) => {
                     serverCallSilent('uploadRecordDocument', [payload], (meta) => {
                         if (meta) {
                             rec.docFileId = meta.fileId || rec.docFileId || '';
@@ -2766,7 +2888,7 @@
                             rec.docSize = meta.size || rec.docSize || '';
                         }
                         resolve(rec);
-                    }, () => resolve(rec));
+                    }, (err) => reject(new Error('Photo upload failed: ' + (err ? err.message : 'Unknown error'))));
                 });
             }
 
@@ -2826,7 +2948,7 @@
                             const dataUrl = await blobToDataUrl(attach.blob);
                             const payload = dataUrlToUploadPayload(dataUrl, (rec.fileName || (rec.studentName || 'photo') + '.jpg'), attach.blob.type || 'image/jpeg', (rec.id + '_' + (rec.studentName || 'photo')).replace(/\s+/g, '_'));
                             // uploadRecordDocument is expected on Apps Script to accept base64 payload
-                            await new Promise((resolve) => {
+                            await new Promise((resolve, reject) => {
                                 serverCallSilent('uploadRecordDocument', [payload], (meta) => {
                                     if (meta) {
                                         rec.docFileId = meta.fileId || rec.docFileId || '';
@@ -2835,7 +2957,7 @@
                                         rec.docSize = meta.size || rec.docSize || '';
                                     }
                                     resolve();
-                                }, () => resolve());
+                                }, (err) => reject(new Error('Photo upload failed: ' + (err ? err.message : 'Unknown error'))));
                             });
                         }
 
@@ -3060,25 +3182,7 @@
                     }
                     favicon.href = schoolConfig.logo;
 
-                    // Dynamically update PWA manifest
-                    const manifest = {
-                        name: schoolConfig.name || "IDentify App",
-                        short_name: schoolConfig.name || "IDentify",
-                        display: "standalone",
-                        background_color: "#f8fafd",
-                        theme_color: "#10b981",
-                        icons: [{
-                            src: schoolConfig.logo,
-                            sizes: "512x512",
-                            type: "image/png",
-                            purpose: "any maskable"
-                        }]
-                    };
-                    const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
-                    let manifestLink = document.querySelector('link[rel="manifest"]');
-                    if (manifestLink) {
-                        manifestLink.href = URL.createObjectURL(blob);
-                    }
+                    // PWA manifest is now loaded from the fixed manifest.json file
                 }
             }
 
@@ -3126,10 +3230,10 @@
                 const prefix = `${code}${yearSuffix}-${classTag}-`;
 
                 // Find existing records with same prefix to determine serial
-                const sameClassRecords = db.filter(r => r.idno && r.idno.startsWith(prefix));
+                const sameClassRecords = db.filter(r => r.id && r.id.startsWith(prefix));
                 let maxSerial = 0;
                 sameClassRecords.forEach(r => {
-                    const parts = r.idno.split('-');
+                    const parts = r.id.split('-');
                     const last = parseInt(parts[parts.length - 1]);
                     if (!isNaN(last) && last > maxSerial) maxSerial = last;
                 });
@@ -3349,27 +3453,6 @@
                 return parts.every(p => /^\d{10}$/.test(p.trim()));
             }
 
-            function numToWordsHindi(n) {
-                if (!n) return "";
-                n = parseInt(n.toString().replace(/,/g, ''));
-                if (isNaN(n)) return "";
-                const words = ["", "Ã Â¤Â Ã Â¤â€¢", "Ã Â¤Â¦Ã Â¥â€¹", "Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¨", "Ã Â¤Å¡Ã Â¤Â¾Ã Â¤Â°", "Ã Â¤ÂªÃ Â¤Â¾Ã Â¤â€šÃ Â¤Å¡", "Ã Â¤â€ºÃ Â¤Â¹", "Ã Â¤Â¸Ã Â¤Â¾Ã Â¤Â¤", "Ã Â¤â€ Ã Â¤Â ", "Ã Â¤Â¨Ã Â¥Å’", "Ã Â¤Â¦Ã Â¤Â¸", "Ã Â¤â€”Ã Â¥Â Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤Â¬Ã Â¤Â¾Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤Â¤Ã Â¥â€¡Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â¦Ã Â¤Â¹", "Ã Â¤ÂªÃ Â¤â€šÃ Â¤Â¦Ã Â¥Â Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤Â¸Ã Â¥â€¹Ã Â¤Â²Ã Â¤Â¹", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤â€¦Ã Â¤Â Ã Â¤Â¾Ã Â¤Â°Ã Â¤Â¹", "Ã Â¤â€°Ã Â¤Â¨Ã Â¥Â Ã Â¤Â¨Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¬Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¥Â Ã Â¤â€¢Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¬Ã Â¤Â¾Ã Â¤Ë†Ã Â¤Â¸", "Ã Â¤Â¤Ã Â¥â€¡Ã Â¤â€¡Ã Â¤Â¸", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â¬Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¥Â Ã Â¤Å¡Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€ºÃ Â¤Â¬Ã Â¥Â Ã Â¤Â¬Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Ë†Ã Â¤Â¸", "Ã Â¤â€¦Ã Â¤Å¸Ã Â¥Â Ã Â¤Â Ã Â¤Â¾Ã Â¤Ë†Ã Â¤Â¸", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¬Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¤Ã Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤â€šÃ Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤ÂªÃ Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€ºÃ Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¸Ã Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€¦Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¤Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Å¡Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¬Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¤Ã Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Å¡Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤ÂªÃ Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€ºÃ Â¤Â¿Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤Â¸Ã Â¥Ë†Ã Â¤â€šÃ Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€¦Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Â²Ã Â¥â‚¬Ã Â¤Â¸", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Å¡Ã Â¤Â¾Ã Â¤Â¸", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¤Â¾Ã Â¤Â¸", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¥Â Ã Â¤Â¯Ã Â¤Â¾Ã Â¤ÂµÃ Â¤Â¨", "Ã Â¤Â¬Ã Â¤Â¾Ã Â¤ÂµÃ Â¤Â¨", "Ã Â¤Â¤Ã Â¤Â¿Ã Â¤Â°Ã Â¥â€¡Ã Â¤ÂªÃ Â¤Â¨", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤ÂµÃ Â¤Â¨", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¤ÂªÃ Â¤Â¨", "Ã Â¤â€ºÃ Â¤ÂªÃ Â¥Â Ã Â¤ÂªÃ Â¤Â¨", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â¾Ã Â¤ÂµÃ Â¤Â¨", "Ã Â¤â€¦Ã Â¤Å¸Ã Â¥Â Ã Â¤Â Ã Â¤Â¾Ã Â¤ÂµÃ Â¤Â¨", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤Â¸Ã Â¤Â¾Ã Â¤Â ", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤Â¬Ã Â¤Â¾Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤Â¤Ã Â¤Â¿Ã Â¤Â°Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â ", "Ã Â¤ÂªÃ Â¥Ë†Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â ", "Ã Â¤â€ºÃ Â¤Â¿Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤Â¸Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤â€¦Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¸Ã Â¤Â ", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤Â¬Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤Â¤Ã Â¤Â¿Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤â€ºÃ Â¤Â¿Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤â€¦Ã Â¤Â Ã Â¤Â¹Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â°", "Ã Â¤â€°Ã Â¤Â¨Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤â€¦Ã Â¤Â¸Ã Â¥Â Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¥Â Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Â¬Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Â¤Ã Â¤Â¿Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤â€ºÃ Â¤Â¿Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤â€¦Ã Â¤Å¸Ã Â¥Â Ã Â¤Â Ã Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Â¨Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â¸Ã Â¥â‚¬", "Ã Â¤Â¨Ã Â¤Â¬Ã Â¥Â Ã Â¤Â¬Ã Â¥â€¡", "Ã Â¤â€¡Ã Â¤â€¢Ã Â¥Â Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤Â¬Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤Â¤Ã Â¤Â¿Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤ÂªÃ Â¤Å¡Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤â€ºÃ Â¤Â¿Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤Â¸Ã Â¤Â¤Ã Â¥Â Ã Â¤Â¤Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤â€¦Ã Â¤Å¸Ã Â¥Â Ã Â¤Â Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡", "Ã Â¤Â¨Ã Â¤Â¿Ã Â¤Â¨Ã Â¥Â Ã Â¤Â¯Ã Â¤Â¾Ã Â¤Â¨Ã Â¤ÂµÃ Â¥â€¡"];
-                function twoDigits(num) {
-                    return words[num] || "";
-                }
-                let str = "";
-                if (n >= 10000000) { str += twoDigits(Math.floor(n / 10000000)) + " Ã Â¤â€¢Ã Â¤Â°Ã Â¥â€¹Ã Â¤Â¡Ã Â¤Â¼ "; n %= 10000000; }
-                if (n >= 100000) { str += twoDigits(Math.floor(n / 100000)) + " Ã Â¤Â²Ã Â¤Â¾Ã Â¤â€“ "; n %= 100000; }
-                if (n >= 1000) { str += twoDigits(Math.floor(n / 1000)) + " Ã Â¤Â¹Ã Â¤Å“Ã Â¤Â¾Ã Â¤Â° "; n %= 1000; }
-                if (n >= 100) {
-                    const hundreds = Math.floor(n / 100);
-                    str += (hundreds === 1 ? "Ã Â¤Â Ã Â¤â€¢" : twoDigits(hundreds)) + " Ã Â¤Â¸Ã Â¥Å’ ";
-                    n %= 100;
-                }
-                if (n > 0) str += twoDigits(n);
-                return str.trim() + " Ã Â¤Â°Ã Â¥ÂÃ Â¤ÂªÃ Â¤Â¯Ã Â¥â€¡";
-            }
-
             // --- HOME PAGE & CHARTS ---
             function renderHomeAnalysis() {
                 let verifiedCount = 0;
@@ -3406,24 +3489,24 @@
 
                 const recentList = document.getElementById('recent-list'); 
                 if (recentList) {
-                    recentList.innerHTML = '';
                     // Sort by most recently added/updated first and take top 8
                     const recentSorted = db.slice().sort((a, b) => ((b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)));
+                    let htmlContent = '';
                     recentSorted.slice(0, 8).forEach(x => {
                         const initial = (x.studentName || 'S').charAt(0).toUpperCase();
                         const hasDoc = hasRecordDocument(x);
                         const photoSrc = fixDriveImageUrl(x.docUrl || x.photoData || '');
-                        recentList.innerHTML += `
+                        htmlContent += `
                 <div onclick="openStudentDetailPopup('${x.id}', false, ${!hasDoc})" class="flex items-stretch border-b border-gray-100 last:border-0 h-[72px] transition cursor-pointer hover:bg-slate-50/50 active:bg-emerald-50/60">
                     <div class="w-16 bg-[var(--accent-soft)] flex-shrink-0 flex items-center justify-center border-r border-gray-50 relative overflow-hidden">
                         ${(photoSrc && photoSrc.length > 8) ? `<img src="${photoSrc}" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="text-2xl font-black text-emerald-600/20" style="display:none">${initial}</span>` : `<span class="text-2xl font-black text-emerald-600/20">${initial}</span>`}
                     </div>
                     <div class="flex-1 px-4 flex flex-col justify-center min-w-0">
-                        <div class="font-extrabold text-[15px] text-emerald-700 truncate">${x.studentName || 'Unnamed'}</div>
-                        <div class="text-[11.5px] text-slate-500 font-bold">${(x.gender || '').toLowerCase().includes('female') ? 'D/o' : 'S/o'}: ${x.fatherName || '-'}</div>
+                        <div class="font-extrabold text-[15px] text-emerald-700 truncate">${sanitizeHTML(x.studentName || 'Unnamed')}</div>
+                        <div class="text-[11.5px] text-slate-500 font-bold">${(x.gender || '').toLowerCase().includes('female') ? 'D/o' : 'S/o'}: ${sanitizeHTML(x.fatherName || '-')}</div>
                     </div>
                     <div class="px-4 flex flex-col items-end justify-center gap-1">
-                        <div class="text-[12px] font-black text-emerald-600 uppercase tracking-tight">${x.sclass || '-'}</div>
+                        <div class="text-[12px] font-black text-emerald-600 uppercase tracking-tight">${sanitizeHTML(x.sclass || '-')}</div>
                         <div class="text-[8.5px] font-black uppercase tracking-widest ${hasDoc ? 'text-emerald-600' : 'text-rose-500'} flex items-center gap-1">
                             ${hasDoc ? '<span class="material-symbols-outlined text-[12px]" style="font-variation-settings: \'FILL\' 1;">verified</span>' : ''}
                             ${hasDoc ? '' : 'Pending'}
@@ -3431,6 +3514,7 @@
                     </div>
                 </div>`;
                     });
+                    recentList.innerHTML = htmlContent;
                 }
 
                 lucide.createIcons();
@@ -3445,7 +3529,16 @@
             function renderChart() {
                 const year = chartYear || new Date().getFullYear().toString();
                 const monthCounts = Array(12).fill(0);
-                db.forEach(x => { const p = parseDateParts(x.date); if (p && p.y === year) { const mIndex = parseInt(p.m) - 1; if (mIndex >= 0 && mIndex < 12) monthCounts[mIndex]++; } });
+                db.forEach(x => {
+                    const ts = x.createdAt || x.updatedAt;
+                    if (ts) {
+                        const d = new Date(Number(ts));
+                        if (d.getFullYear().toString() === year) {
+                            const mIndex = d.getMonth();
+                            if (mIndex >= 0 && mIndex < 12) monthCounts[mIndex]++;
+                        }
+                    }
+                });
                 const monthChart = document.getElementById('month-chart'); monthChart.innerHTML = '';
                 const maxVal = Math.max(...monthCounts, 1);
                 const monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -3851,7 +3944,7 @@
 
                 const nextSn = nowTs;
                 lastFetchedSn = nextSn;
-                const structuredId = `${schoolInitials || "DPS"}-${nextSn}`;
+                const structuredId = `draft_${schoolInitials || "DPS"}-${nextSn}`;
                 draftServerRecordId = structuredId;
                 
                 const reservationPayload = {
@@ -3866,12 +3959,13 @@
                     deviceInfo: deviceInfo + ' (' + navigator.platform + ')',
                     createdBy: getCurrentUserName()
                 };
-                serverCallSilent('addRecord', [reservationPayload]);
-
+                // Disabled to prevent ghost records on cancellation
+                // serverCallSilent('addRecord', [reservationPayload]);
                 setBlankRecordMode('student');
             }
 
             let dbSearchTimer = null;
+            let filterDebounceTimer = null;
             function onSearchInput() {
                 const search = document.getElementById('mainSearch');
                 const icon = document.getElementById('toggle-icon');
@@ -3880,7 +3974,10 @@
 
                 if (!search || !icon || !btn) return;
 
-                filterRecords();
+                if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+                filterDebounceTimer = setTimeout(() => {
+                    filterRecords();
+                }, 300);
 
                 const formOpen = !!wrapper && !wrapper.classList.contains('hidden');
                 if (formOpen || blankRecordMode !== 'none') return;
@@ -4083,25 +4180,24 @@
                         return `${String(date_info.getDate()).padStart(2, '0')}-${String(date_info.getMonth() + 1).padStart(2, '0')}-${date_info.getFullYear()}`;
                     }
                     json.forEach(row => {
-                        const getVal = (k) => row[k] || row[Object.keys(row).find(key => key.toLowerCase().includes(k.toLowerCase()))] || '';
+                        const getVal = (k) => row[k] || row[Object.keys(row).find(key => key && key.toLowerCase().includes(k.toLowerCase()))] || '';
                         const rec = {
-                            id: Date.now() + Math.floor(Math.random() * 1000),
-                            sanad: getVal('Record'), book: getVal('Book'),
-                            date: excelDateToJSDate(getVal('Date')),
-                            place: getVal('Place'),
-                            gname: getVal('Groom_Name') || getVal('Groom Name'),
-                            gage: getVal('Groom_Age'), gfather: getVal('Groom_Father'), gaddress: getVal('Groom_Address'),
-                            bname: getVal('Bride_Name') || getVal('Bride Name'),
-                            bage: getVal('Bride_Age'), bfather: getVal('Bride_Father'), baddress: getVal('Bride_Address'),
-                            wakeel: getVal('Wakeel_Name'), wakeelage: getVal('Wakeel_Age'), wakeelfather: getVal('Wakeel_Father'), wakeeladdress: getVal('Wakeel_Address'),
-                            gawah1: getVal('Gawah1_Name'), gawah1age: getVal('Gawah1_Age'), gawah1father: getVal('Gawah1_Father'), gawah1address: getVal('Gawah1_Address'),
-                            gawah2: getVal('Gawah2_Name'), gawah2age: getVal('Gawah2_Age'), gawah2father: getVal('Gawah2_Father'), gawah2address: getVal('Gawah2_Address'),
-                            meher: getVal('Meher'), mehernote: getVal('Meher_Note'), kazi: getVal('Kazi'), masjid: getVal('Masjid'),
-                            photoData: '', fileName: '', docFileId: '', docUrl: '', docMimeType: '', docSize: ''
+                            id: getVal('Id No') || getVal('id') || `TEMP_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+                            sn: getVal('Sn') || '',
+                            studentName: getVal('Student Name') || getVal('Student_Name') || getVal('Name'),
+                            fatherName: getVal('Father Name') || getVal('Father_Name') || getVal('Father'),
+                            dob: excelDateToJSDate(getVal('DOB') || getVal('Date of Birth') || ''),
+                            mobile: getVal('Mobile') || getVal('Phone'),
+                            address: getVal('Address') || getVal('Place'),
+                            sclass: getVal('Class') || getVal('Standard'),
+                            gender: getVal('Gender') || getVal('Sex'),
+                            fileName: getVal('Photo Name') || getVal('fileName') || '',
+                            docUrl: getVal('Photo Link') || getVal('docUrl') || '',
+                            photoData: '', docFileId: '', docMimeType: '', docSize: ''
                         };
-                        if (rec.sanad && rec.gname) records.push(rec);
+                        if (rec.studentName) records.push(rec);
                     });
-                    if (records.length === 0) { showModal('error', 'Failed', 'No valid records found.'); closeAllMenus(); input.value = ''; return; }
+                    if (records.length === 0) { showModal('error', 'Failed', 'No valid student records found.'); closeAllMenus(); input.value = ''; return; }
                     serverCall('addManyRecords', [records], (count) => {
                         showToast(`Imported ${count || records.length} records`);
                         loadAllData();
@@ -4118,7 +4214,7 @@
                 if (bin.length === 0) { container.innerHTML = '<div class="text-center text-slate-400 py-10">Recycle Bin is Empty</div>'; }
                 else {
                     bin.forEach(x => {
-                        container.innerHTML += `<div class="flex items-center justify-between p-3 bg-slate-50 border rounded-xl"><div><div class="font-bold text-sm text-slate-700">${x.studentName || "N/A"}</div><div class="text-xs text-slate-500">Deleted: Class ${x.sclass || ""}</div></div><div class="flex gap-2"><button onclick="event.stopPropagation();restoreRecord(${x.id})" class="p-2 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold hover:bg-emerald-200">Restore</button><button onclick="event.stopPropagation();permDelete(${x.id})" class="p-2 bg-rose-100 text-rose-500 rounded-lg text-xs font-bold hover:bg-rose-200">Delete</button></div></div>`;
+                        container.innerHTML += `<div class="flex items-center justify-between p-3 bg-slate-50 border rounded-xl"><div><div class="font-bold text-sm text-slate-700">${sanitizeHTML(x.studentName || "N/A")}</div><div class="text-xs text-slate-500">Deleted: Class ${sanitizeHTML(x.sclass || "")}</div></div><div class="flex gap-2"><button onclick="event.stopPropagation();restoreRecord(${x.id})" class="p-2 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold hover:bg-emerald-200">Restore</button><button onclick="event.stopPropagation();permDelete(${x.id})" class="p-2 bg-rose-100 text-rose-500 rounded-lg text-xs font-bold hover:bg-rose-200">Delete</button></div></div>`;
                     });
                 }
                 document.getElementById('recycle-modal').classList.remove('hidden');
@@ -4202,7 +4298,7 @@
             }
 
             function confirmDeleteAllSystemData() {
-                showModal('confirm', 'DELETE ALL SYSTEM DATA?', 'Are you absolutely sure you want to permanently erase ALL records from the admin panel and school panel? This action CANNOT be undone.', () => {
+                showModal('delete-all', 'DELETE ALL SYSTEM DATA?', 'Are you absolutely sure you want to permanently erase ALL records from the admin panel and school panel? This action CANNOT be undone.', () => {
                     const overlay = document.createElement('div');
                     overlay.className = 'fixed inset-0 z-[9999] flex items-center justify-center bg-white/80 backdrop-blur-sm';
                     overlay.innerHTML = `
@@ -4226,7 +4322,7 @@
                         document.body.removeChild(overlay);
                         showModal('error', 'Error Deleting Data', 'An error occurred while deleting data: ' + (err.message || 'Unknown error'));
                     });
-                }, 'Yes, Delete All Data');
+                }, 'Delete All');
             }
 
             function restoreRecord(id) {
@@ -4400,28 +4496,36 @@
                 }
             }
             function goToDatabase(type, val) { showTab('records'); resetFilters(); setTimeout(() => { if (type === 'search') document.getElementById('mainSearch').value = val; filterRecords(); }, 50); }
-            function updateMeherHindiPreview(value) {
-                const preview = document.getElementById('meher-hindi-preview');
-                if (!preview) return;
-                const hindiValue = numToWordsHindi(value);
-                preview.innerText = hindiValue || '';
-            }
-            function formatMeherInputValue(value) {
-                const digits = String(value || '').replace(/[^0-9]/g, '');
-                return digits ? Number(digits).toLocaleString('en-IN') : '';
-            }
-            function setupMeherInput() { const meherInput = document.getElementById('in-meher'); if (!meherInput) return; meherInput.addEventListener('input', (e) => { const val = formatMeherInputValue(e.target.value); e.target.value = val; updateMeherHindiPreview(val); }); meherInput.value = formatMeherInputValue(meherInput.value); updateMeherHindiPreview(meherInput.value); }
+
             function formatFileSize(b) { if (b === 0) return '0 B'; const k = 1024, s = ['B', 'KB', 'MB'], i = Math.floor(Math.log(b) / Math.log(k)); return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + s[i]; }
             function getFormFieldMap() { return ['sclass', 'gender', 'studentName', 'fatherName', 'dob', 'mobile', 'aadhar', 'address', 'section', 'customField1', 'customField2', 'customField3', 'customField4', 'customField5']; }
             function getSectionNameForInput(inputId) { const map = { 'in-sname': 'Student Details', 'in-class': 'Student Details', 'in-father': 'Student Details', 'in-gender': 'Student Details', 'in-dob': 'Student Details', 'in-mobile': 'Contact Details', 'in-aadhar': 'Contact Details', 'in-address': 'Contact Details', 'photo-upload': 'Document' }; return map[inputId] || 'Form'; }
             function collectFormDraft() { const fields = {}; getFormFieldMap().forEach(k => { const el = document.getElementById('in-' + k); fields[k] = el ? el.value : ''; }); return { editId: document.getElementById('edit-id').value || '', draftServerRecordId: draftServerRecordId || '', fields, documentLabel: originalFileName || '', documentType: currentFileType || '', hasPendingDocument: !!photoData || !!pendingUploadedDocument, removeExistingDocument: !!removeExistingDocument, savedAt: Date.now() }; }
-            function saveDraft(sectionName) { if (document.getElementById('edit-id').value) return; const draft = collectFormDraft(); draft.lastSection = sectionName || 'Form'; localStorage.setItem(FORM_DRAFT_KEY, JSON.stringify(draft)); }
-            function queueDraftSave(sectionName) { if (autosaveTimer) clearTimeout(autosaveTimer); autosaveTimer = setTimeout(() => saveDraft(sectionName), 300); }
             function clearDraft() { 
+                if (draftServerRecordId && window.idbDelete) {
+                    idbDelete(IDB_STORE_ATTACH, `${draftServerRecordId}::photo`).catch(()=>{});
+                }
                 localStorage.removeItem(FORM_DRAFT_KEY); 
                 lastDuplicatePromptKey = ''; 
                 draftServerRecordId = ''; 
             }
+            function saveDraft(sectionName) { 
+                if (document.getElementById('edit-id').value) return; 
+                const draft = collectFormDraft(); 
+                draft.lastSection = sectionName || 'Form'; 
+                localStorage.setItem(FORM_DRAFT_KEY, JSON.stringify(draft)); 
+                
+                // Save draft image to IndexedDB to avoid 5MB localStorage limit
+                if (photoData && draftServerRecordId && window.idbPut && typeof dataUrlToBlob === 'function') {
+                    try {
+                        const blob = dataUrlToBlob(photoData);
+                        if (blob) {
+                            idbPut(IDB_STORE_ATTACH, { id: `${draftServerRecordId}::photo`, blob: blob, savedAt: Date.now() }).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+            }
+            function queueDraftSave(sectionName) { if (autosaveTimer) clearTimeout(autosaveTimer); autosaveTimer = setTimeout(() => saveDraft(sectionName), 300); }
             function restoreDraft() {
                 const editIdEl = document.getElementById('edit-id');
                 if (editIdEl && editIdEl.value) return;
@@ -4460,6 +4564,19 @@
                     if (removePhotoBtn) {
                         removePhotoBtn.classList.remove('hidden');
                     }
+                }
+                
+                if (draftServerRecordId && window.idbGet) {
+                    idbGet(IDB_STORE_ATTACH, `${draftServerRecordId}::photo`).then(attach => {
+                        if (attach && attach.blob && typeof blobToDataUrl === 'function') {
+                            blobToDataUrl(attach.blob).then(dataUrl => {
+                                photoData = dataUrl;
+                                if (typeof showPhotoPreview === 'function') {
+                                    showPhotoPreview(dataUrl);
+                                }
+                            }).catch(()=>{});
+                        }
+                    }).catch(()=>{});
                 }
             }
             function populateFormFromRecord(r) {
@@ -4533,36 +4650,43 @@
                 }
                 return normalizeAutofillLookupValue(value).replace(/[\/\.\s]+/g, '-');
             }
-            function findAutofillCandidate(bookVal, sanadVal, dateVal, editId) {
+            function findAutofillCandidate(studentNameVal, fatherNameVal, classVal, editId) {
                 const currentEditId = String(editId || '').trim();
-                const normalizedBook = normalizeAutofillLookupValue(bookVal);
-                const normalizedRecord = normalizeAutofillLookupValue(sanadVal);
-                const normalizedDate = normalizeAutofillDateValue(dateVal);
-                if (!normalizedBook || !normalizedRecord || !normalizedDate) return null;
+                const sName = normalizeAutofillLookupValue(studentNameVal);
+                const fName = normalizeAutofillLookupValue(fatherNameVal);
+                const cVal = normalizeAutofillLookupValue(classVal);
+                if (!sName || !fName || !cVal) return null;
                 const records = db.filter(item => String(item.id || '').trim() !== currentEditId);
                 const exactMatches = records.filter(item =>
-                    normalizeAutofillLookupValue(item.book) === normalizedBook &&
-                    normalizeAutofillLookupValue(item.sanad) === normalizedRecord &&
-                    normalizeAutofillDateValue(item.date) === normalizedDate
+                    normalizeAutofillLookupValue(item.studentName) === sName &&
+                    normalizeAutofillLookupValue(item.fatherName) === fName &&
+                    normalizeAutofillLookupValue(item.sclass) === cVal
                 );
                 if (exactMatches.length === 1) return { record: exactMatches[0], mode: 'exact' };
                 if (exactMatches.length > 1) return { multiple: true, mode: 'exact', count: exactMatches.length };
                 return null;
             }
             function checkDuplicateRecordPrompt() {
-                const bookVal = (document.getElementById('in-book').value || '').trim();
-                const sanadVal = (document.getElementById('in-sanad').value || '').trim();
-                const dateVal = (document.getElementById('in-date').value || '').trim();
-                const editId = (document.getElementById('edit-id').value || '').trim();
-                if (!bookVal || !sanadVal || !dateVal) { lastDuplicatePromptKey = ''; return; }
-                const match = findAutofillCandidate(bookVal, sanadVal, dateVal, editId);
+                const snEl = document.getElementById('in-studentName');
+                const fnEl = document.getElementById('in-fatherName');
+                const scEl = document.getElementById('in-sclass');
+                const editIdEl = document.getElementById('edit-id');
+                
+                const sNameVal = snEl ? (snEl.value || '').trim() : '';
+                const fNameVal = fnEl ? (fnEl.value || '').trim() : '';
+                const classVal = scEl ? (scEl.value || '').trim() : '';
+                const editId = editIdEl ? (editIdEl.value || '').trim() : '';
+                
+                if (!sNameVal || !fNameVal || !classVal) { lastDuplicatePromptKey = ''; return; }
+                const match = findAutofillCandidate(sNameVal, fNameVal, classVal, editId);
                 if (!match) { lastDuplicatePromptKey = ''; return; }
+                
                 if (match.multiple) {
-                    const multiKey = `multi::${bookVal}::${sanadVal}::${dateVal}::${editId}`;
+                    const multiKey = `multi::${sNameVal}::${fNameVal}::${classVal}::${editId}`;
                     if (lastDuplicatePromptKey === multiKey) return;
                     lastDuplicatePromptKey = multiKey;
                     setTimeout(() => { if (lastDuplicatePromptKey === multiKey) lastDuplicatePromptKey = ''; }, 600);
-                    showModal('error', 'Multiple Records Found', `Book ${bookVal}, Record ${sanadVal} aur Student Date ${dateVal} ke saath ${match.count} records mil rahe hain.`);
+                    showModal('error', 'Multiple Records Found', `Student: ${sNameVal}, Father: ${fNameVal}, Class: ${classVal} ke saath ${match.count} records mil rahe hain.`);
                     return;
                 }
                 const existing = match.record;
@@ -4571,9 +4695,7 @@
                 lastDuplicatePromptKey = promptKey;
                 setTimeout(() => { if (lastDuplicatePromptKey === promptKey) lastDuplicatePromptKey = ''; }, 600);
                 const title = 'Existing Record Found';
-                const groomName = (existing.gname || '').trim() || '-';
-                const brideName = (existing.bname || '').trim() || '-';
-                const msg = `Book ${bookVal}, Record ${sanadVal} aur Student Date ${dateVal} ka record pehle se maujood hai.\nStudent: ${groomName}\nStudentn: ${brideName}\n\nKya aap is data ko autofill karna chahte hain?`;
+                const msg = `Student: ${existing.studentName || '-'}\nFather: ${existing.fatherName || '-'}\nClass: ${existing.sclass || '-'}\n\nYe record pehle se maujood hai.\nKya aap is data ko autofill karna chahte hain?`;
                 showModal('confirm', title, msg, () => { populateFormFromRecord(existing); showModal('success', 'Autofill Complete', 'Existing record form me load ho gaya.'); }, 'Yes, Autofill');
             }
             function hasDraftFormContent() { return getFormFieldMap().some(k => { const el = document.getElementById('in-' + k); return el && String(el.value || '').trim() !== ''; }) || !!pendingUploadedDocument || !!originalFileName; }
@@ -4701,7 +4823,13 @@
                         canvas.height = height;
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, width, height);
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                        
+                        let dataUrl;
+                        if (file.type === 'image/png') {
+                            dataUrl = canvas.toDataURL('image/png');
+                        } else {
+                            dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                        }
 
                         // Convert back to file-like object for metadata
                         fetch(dataUrl)
@@ -4723,14 +4851,8 @@
             }
 
             function saveDraftToServer() {
-                if (document.getElementById('edit-id').value) return;
-                const payload = buildFormRecordPayload({ draftStatus: 'DRAFT' });
-                if (!payload) return;
-                
-                const action = (payload.id && !payload.id.startsWith('TEMP_')) ? 'updateRecord' : 'addRecord';
-                serverCallSilent(action, [payload], (res) => {
-                    if (res && res.id) draftServerRecordId = res.id;
-                });
+                // Feature disabled to prevent "Ghost Records".
+                // Drafts remain locally in LocalStorage/IndexedDB until user explicitly saves the record.
             }
 
             function handlePhotoFile(file) {
@@ -4991,6 +5113,8 @@
                     
                     const duplicate = db.find(r => {
                         if (eid && r.id === eid) return false;
+                        if (!eid && typeof draftServerRecordId !== 'undefined' && r.id === draftServerRecordId) return false;
+                        if (!nLower) return false;
                         const rName = (r.studentName || '').trim().toLowerCase();
                         const rFather = (r.fatherName || '').trim().toLowerCase();
                         const rClass = (r.sclass || '').trim().toLowerCase();
@@ -5335,9 +5459,9 @@
                 syncSelectedRecordsSection();
                 if (selectedRecords.size === 0) return;
                 
-                showModal('confirm', 'Verify Selected?', `Are you sure you want to verify ${selectedRecords.size} records?`, () => {
+                showModal('confirm', 'Verify Selected?', `Are you sure you want to verify ${selectedRecords.size} records?`, async () => {
                     let updatedCount = 0;
-                    selectedRecords.forEach(id => {
+                    for (const id of Array.from(selectedRecords)) {
                         const idx = db.findIndex(x => x.id === id);
                         if (idx !== -1 && !db[idx].verified) {
                             db[idx].verified = true;
@@ -5347,10 +5471,14 @@
                             db[idx]._syncStatus = 'syncing';
                             db[idx]._pending = true;
                             
-                            syncVerifiedRecordToGoogle(db[idx]);
+                            try {
+                                await syncVerifiedRecordToGoogle(db[idx]);
+                            } catch (e) {
+                                console.error('Error verifying record', id, e);
+                            }
                             updatedCount++;
                         }
-                    });
+                    }
 
                     if (updatedCount > 0) {
                         
@@ -5459,6 +5587,7 @@
                     });
                     
                     const qrEnabled = localStorage.getItem('identify_qr_enabled') === 'true';
+                    const savedQrFields = JSON.parse(localStorage.getItem('identify_qr_fields') || '["id"]');
                     
                     for (let i = 0; i < recordsToExport.length; i++) {
                         const rec = recordsToExport[i];
@@ -5470,8 +5599,20 @@
                         let qrFileName = "";
                         if (qrEnabled) {
                             try {
+                                let qrVal = "";
+                                if (savedQrFields.length === 1 && savedQrFields[0] === 'id') {
+                                    qrVal = String(rec.id);
+                                } else {
+                                    const obj = {};
+                                    savedQrFields.forEach(f => {
+                                        // For special labels, we might want to map keys to labels if needed. 
+                                        // But raw data works.
+                                        obj[f] = rec[f] || "";
+                                    });
+                                    qrVal = JSON.stringify(obj);
+                                }
                                 const qr = new QRious({
-                                    value: String(rec.id),
+                                    value: qrVal,
                                     size: 300,
                                     level: 'H'
                                 });
@@ -5502,6 +5643,11 @@
                             } catch(e) {
                                 console.error("Photo Error", e);
                             }
+                        }
+                        
+                        // Yield to main thread every 10 records to prevent browser freeze/crash
+                        if (i > 0 && i % 10 === 0) {
+                            await new Promise(r => setTimeout(r, 0));
                         }
                         
                         exportData.push({
@@ -6032,7 +6178,7 @@
                         <!-- Name Section (Separate Card) -->
                         <div class="preview-details-box !py-2.5 mb-2">
                             <div class="px-1 flex items-center justify-between gap-2">
-                                <div class="text-lg font-black text-emerald-700 truncate min-w-0">${rec.studentName || 'Unnamed Student'}</div>
+                                <div class="text-lg font-black text-emerald-700 truncate min-w-0">${sanitizeHTML(rec.studentName || 'Unnamed Student')}</div>
                                 ${previewVerifiedIcons}
                             </div>
                         </div>
@@ -6136,8 +6282,6 @@
                             ${schoolConfig.logo ? `<img src="${schoolConfig.logo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-school-flag text-5xl text-emerald-600"></i>`}
                         </div>
                         <h3 class="text-xl font-black text-slate-800 mb-1">${schoolConfig.name || 'School Name'}</h3>
-                        <p class="text-xs text-slate-400 font-bold uppercase tracking-widest mb-2">${schoolConfig.about || 'School Info'}</p>
-                        <span class="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-black uppercase tracking-widest">System Settings</span>
                     </div>
 
                     <div class="space-y-3">
@@ -6343,8 +6487,8 @@
                     <div class="absolute bottom-[90px] left-[25px] opacity-[0.15] text-blue-400 animate-pulse pointer-events-none z-0" style="animation-delay: 1s;"><i class="fa-solid fa-star text-[8px]"></i></div>
 
                     <div class="p-6 bg-transparent min-h-[500px] flex flex-col relative z-10">
-                        <div class="mb-5 system-card p-4 rounded-2xl border border-emerald-100 bg-emerald-50/60 shadow-sm">
-                            <div class="flex items-center justify-between gap-3">
+                        <div id="qr_settings_card" class="mb-5 system-card p-4 rounded-2xl border border-emerald-100 bg-emerald-50/60 shadow-sm relative overflow-hidden transition-all duration-300 ease-in-out">
+                            <div class="flex items-center justify-between gap-3 relative z-10">
                                 <!-- Left side: QR Code Enable/Disable -->
                                 <div class="flex items-center gap-2">
                                     <span class="text-xs font-black text-slate-700 uppercase tracking-wider select-none flex items-center gap-1.5">
@@ -6593,6 +6737,7 @@
                     return;
                 }
 
+                let currentRecordsHtml = '';
                 pageItems.forEach((x, idx) => {
                     let displayId = x.id;
                     if (displayId && displayId.startsWith('draft_')) {
@@ -6615,30 +6760,23 @@
                     }
 
                     // Records list - split click zones
-                    t.innerHTML += `
+                    currentRecordsHtml += `
             <div class="flex items-stretch border-b border-gray-100 last:border-0 h-[72px] transition cursor-pointer hover:bg-slate-50/50 active:bg-emerald-50/40">
                 <!-- Data & Photo View: Preview Zone -->
-                <div class="flex flex-1 items-stretch min-w-0" onclick="openStudentDetailPopup('${x.id}', false, ${!hasDoc})">
+                <div class="flex flex-1 items-stretch min-w-0 record-preview-zone" data-id="${x.id}" data-hasdoc="${!hasDoc}">
                     <div class="w-16 bg-[var(--accent-soft)] flex-shrink-0 flex items-center justify-center border-r border-gray-50 relative overflow-hidden">
                         ${(photoSrc && photoSrc.length > 8) ? `<img src="${photoSrc}" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="text-2xl font-black text-emerald-600/20" style="display:none">${initial}</span>` : `<span class="text-2xl font-black text-emerald-600/20">${initial}</span>`}
                     </div>
                     <div class="flex-1 px-4 flex flex-col justify-center min-w-0">
-                        <div class="font-extrabold text-[15px] text-emerald-700 truncate whitespace-nowrap">${x.studentName || 'Unnamed'}</div>
-                        <div class="text-[11.5px] text-slate-500 font-bold truncate whitespace-nowrap">${(x.gender || '').toLowerCase().includes('female') ? 'D/o' : 'S/o'}: ${x.fatherName || '-'}</div>
+                        <div class="font-extrabold text-[15px] text-emerald-700 truncate whitespace-nowrap">${sanitizeHTML(x.studentName || 'Unnamed')}</div>
+                        <div class="text-[11.5px] text-slate-500 font-bold truncate whitespace-nowrap">${(x.gender || '').toLowerCase().includes('female') ? 'D/o' : 'S/o'}: ${sanitizeHTML(x.fatherName || '-')}</div>
                     </div>
                 </div>
 
                 <!-- Class & Checkbox: Selection Zone -->
-                <div class="px-4 flex flex-col items-end justify-center gap-1 min-w-[80px]" 
-                    onmousedown="lpStart('${x.id}', ${hasDoc})" 
-                    ontouchstart="lpStart('${x.id}', ${hasDoc})" 
-                    onmouseup="lpCancel()" 
-                    ontouchend="lpCancel()" 
-                    onmouseleave="lpCancel()" 
-                    ontouchcancel="lpCancel()"
-                    onclick="lpClick('${x.id}', event, ${hasDoc})">
+                <div class="px-4 flex flex-col items-end justify-center gap-1 min-w-[80px] record-selection-zone" data-id="${x.id}" data-hasdoc="${hasDoc}">
                     <div class="flex items-center gap-2">
-                        <div class="text-[12px] font-black text-emerald-600 uppercase tracking-tight">${x.sclass || '-'}</div>
+                        <div class="text-[12px] font-black text-emerald-600 uppercase tracking-tight">${sanitizeHTML(x.sclass || '-')}</div>
                         ${((activeStatusFilter === 'unverified' || activeStatusFilter === 'pending' || (currentUser && currentUser.userId === 'admin' && (activeStatusFilter === 'verified' || activeStatusFilter === 'all' || activeStatusFilter === 'completed'))) && selectedRecords.size > 0) ? `
                         <div class="bulk-cb w-[18px] h-[18px] rounded-md border-2 ${selectedRecords.has(String(x.id)) ? 'bg-emerald-600 border-emerald-600' : 'bg-white border-slate-300'} flex items-center justify-center transition-all" data-id="${x.id}">
                             <i class="${selectedRecords.has(String(x.id)) ? 'fa-solid fa-check text-[10px] text-white' : ''}"></i>
@@ -6656,6 +6794,7 @@
                 </div>
             </div>`;
                 });
+                t.innerHTML = currentRecordsHtml;
 
                 lucide.createIcons();
                 updateShowingCount();
@@ -6990,6 +7129,12 @@
                 if (progressWrap) progressWrap.classList.add('hidden');
                 document.getElementById('modal-title').textContent = title;
                 document.getElementById('modal-msg').innerHTML = msg;
+                if (type === 'delete-all') {
+                    actions.className = "flex flex-col mt-4";
+                } else {
+                    actions.className = "flex gap-3 mt-4";
+                }
+                
                 if (type === 'error') {
                     iconDiv.className = "w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center bg-rose-100 text-rose-500";
                     iconDiv.innerHTML = '<i data-lucide="alert-triangle"></i>';
@@ -7000,6 +7145,35 @@
                     iconDiv.innerHTML = '<i data-lucide="alert-triangle"></i>';
                     actions.innerHTML = `<button onclick="closeModal()" class="flex-1 py-3 bg-slate-200 text-slate-800 rounded-xl font-bold flex items-center justify-center gap-2"><i data-lucide="x" class="w-4 h-4"></i> Cancel</button><button id="modal-confirm-btn" class="flex-1 py-3 bg-rose-500 text-white rounded-xl font-bold flex items-center justify-center gap-2"><i data-lucide="check" class="w-4 h-4"></i> ${confirmLabel}</button>`;
                     document.getElementById('modal-confirm-btn').onclick = () => { closeModal(); if (onConfirm) onConfirm(); };
+                } else if (type === 'delete-all') {
+                    iconDiv.className = "w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center bg-rose-100 text-rose-500";
+                    iconDiv.innerHTML = '<i data-lucide="alert-triangle"></i>';
+                    let html = `<div class="mb-4 mt-2 text-left w-full"><label class="text-[11px] font-black text-slate-700 uppercase tracking-widest mb-1.5 block">Admin Password</label><input type="password" id="modal-delete-password" class="w-full h-11 bg-white border-2 border-slate-200 text-slate-800 rounded-xl px-4 font-bold text-sm outline-none focus:border-rose-500 focus:ring-4 focus:ring-rose-500/10 transition-all placeholder:font-normal placeholder:text-slate-400" placeholder="Enter dashboard password"></div>`;
+                    actions.innerHTML = html + `<div class="flex gap-2 w-full"><button onclick="closeModal()" class="flex-1 py-3 bg-slate-200 text-slate-800 rounded-xl font-bold flex items-center justify-center gap-2"><i data-lucide="x" class="w-4 h-4"></i> Cancel</button><button id="modal-confirm-btn" class="flex-1 py-3 bg-rose-500 text-white rounded-xl font-bold flex items-center justify-center gap-2"><i data-lucide="trash-2" class="w-4 h-4"></i> ${confirmLabel}</button></div>`;
+                    document.getElementById('modal-confirm-btn').onclick = async () => { 
+                        const btn = document.getElementById('modal-confirm-btn');
+                        const originalText = btn.innerHTML;
+                        const pwd = document.getElementById('modal-delete-password').value;
+                        if (!pwd) {
+                            showToast('<span class="material-symbols-outlined text-[18px] mr-2" style="font-variation-settings: \'FILL\' 1; vertical-align: middle;">error</span> Please enter your password', true);
+                            return;
+                        }
+                        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verifying...';
+                        btn.disabled = true;
+                        btn.classList.add('opacity-70');
+                        try {
+                            const user = window.auth?.currentUser;
+                            if (!user || !user.email) throw new Error('Not logged in');
+                            await window.firebaseAPI.signInWithEmailAndPassword(window.auth, user.email, pwd);
+                            closeModal(); 
+                            if (onConfirm) onConfirm(); 
+                        } catch (err) {
+                            showToast('<span class="material-symbols-outlined text-[18px] mr-2" style="font-variation-settings: \'FILL\' 1; vertical-align: middle;">error</span> Incorrect Password', true);
+                            btn.innerHTML = originalText;
+                            btn.disabled = false;
+                            btn.classList.remove('opacity-70');
+                        }
+                    };
                 } else {
                     iconDiv.className = "w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center bg-emerald-100 text-emerald-600";
                     iconDiv.innerHTML = '<i data-lucide="check-circle"></i>';
@@ -7018,7 +7192,7 @@
             function confirmReset() { showModal('confirm', 'Reset Form?', 'All entered data will be lost. Are you sure?', () => resetForm(), 'Yes, Reset'); }
 
             function renderPreviewRow(icon, label, value) {
-                return `<div class="preview-row"><i class="fa-solid ${icon}"></i><span class="preview-label">${label}</span><span class="preview-colon">:</span><span class="preview-value">${value || '--'}</span></div>`;
+                return `<div class="preview-row"><i class="fa-solid ${icon}"></i><span class="preview-label">${label}</span><span class="preview-colon">:</span><span class="preview-value">${sanitizeHTML(value) || '--'}</span></div>`;
             }
 
             function handleSearchInput(val) {
@@ -7037,7 +7211,7 @@
                 renderCurrentRecordsPage();
             }
 
-            function verifyFromPreview() {
+            async function verifyFromPreview() {
                 if (!previewRecord || !previewRecord.id) return;
                 const currentId = previewRecord.id;
                 const idx = db.findIndex(x => x.id === currentId);
@@ -7046,11 +7220,25 @@
                     if (db[idx].id.startsWith('draft_')) {
                         const schoolInitials = (schoolConfig.name || "DPS").trim().split(/\s+/).map(w => w[0]).join('').toUpperCase();
                         const year = new Date().getFullYear().toString().slice(-2);
-                        let maxSn = 0;
-                        db.forEach(x => { if (x.sn && Number(x.sn) > maxSn) maxSn = Number(x.sn); });
+                        
+                        let localMaxSn = 0;
+                        db.forEach(x => { if (x.sn && Number(x.sn) > localMaxSn) localMaxSn = Number(x.sn); });
                         const savedSn = parseInt(localStorage.getItem(SN_KEY)) || 0;
-                        if (savedSn > maxSn) maxSn = savedSn;
-                        let nextSn = maxSn + 1;
+                        if (savedSn > localMaxSn) localMaxSn = savedSn;
+                        
+                        if (typeof showToast === 'function') showToast('Generating unique ID...', 'info');
+                        
+                        let nextSn;
+                        try {
+                            nextSn = await new Promise((resolve, reject) => {
+                                serverCall('generateId', [localMaxSn], resolve, reject);
+                            });
+                        } catch(e) {
+                            console.error(e);
+                            if (typeof showToast === 'function') showToast('Failed to generate secure ID. Check connection.', 'error');
+                            return;
+                        }
+
                         const paddedSn = String(nextSn).padStart(3, '0');
                         const generatedId = `${schoolInitials || "DPS"}${year}${paddedSn}`;
                         
@@ -7058,7 +7246,6 @@
                         db[idx].id = generatedId;
                         db[idx].sn = nextSn;
                         
-                        nextSn++;
                         try { localStorage.setItem(SN_KEY, nextSn); } catch(e){}
                     }
                     db[idx].verified = true;
@@ -7098,7 +7285,7 @@
             }
 
             // Verify current previewRecord and move to next pending
-            function verifyAndGoNext() {
+            async function verifyAndGoNext() {
                 if (!previewRecord || !previewRecord.id) {
                     saveAndNextRecord();
                     return;
@@ -7110,11 +7297,25 @@
                     if (db[idx].id.startsWith('draft_')) {
                         const schoolInitials = (schoolConfig.name || "DPS").trim().split(/\s+/).map(w => w[0]).join('').toUpperCase();
                         const year = new Date().getFullYear().toString().slice(-2);
-                        let maxSn = 0;
-                        db.forEach(x => { if (x.sn && Number(x.sn) > maxSn) maxSn = Number(x.sn); });
+                        
+                        let localMaxSn = 0;
+                        db.forEach(x => { if (x.sn && Number(x.sn) > localMaxSn) localMaxSn = Number(x.sn); });
                         const savedSn = parseInt(localStorage.getItem(SN_KEY)) || 0;
-                        if (savedSn > maxSn) maxSn = savedSn;
-                        let nextSn = maxSn + 1;
+                        if (savedSn > localMaxSn) localMaxSn = savedSn;
+                        
+                        if (typeof showToast === 'function') showToast('Generating unique ID...', 'info');
+                        
+                        let nextSn;
+                        try {
+                            nextSn = await new Promise((resolve, reject) => {
+                                serverCall('generateId', [localMaxSn], resolve, reject);
+                            });
+                        } catch(e) {
+                            console.error(e);
+                            if (typeof showToast === 'function') showToast('Failed to generate secure ID. Check connection.', 'error');
+                            return;
+                        }
+
                         const paddedSn = String(nextSn).padStart(3, '0');
                         const generatedId = `${schoolInitials || "DPS"}${year}${paddedSn}`;
                         
@@ -7122,7 +7323,6 @@
                         db[idx].id = generatedId;
                         db[idx].sn = nextSn;
                         
-                        nextSn++;
                         try { localStorage.setItem(SN_KEY, nextSn); } catch(e){}
                     }
                     db[idx].verified = true;
@@ -8051,7 +8251,7 @@
             sclass: ['General', 'Nursery', 'KG-1', 'KG-2', 'Class 1', 'Class 2', 'Class 3'],
             gender: ['Male', 'Female', 'Other']
         };
-        const FB_FIXED_TOP_FIELDS = ['photo', 'sclass', 'gender'];
+        const FB_FIXED_TOP_FIELDS = [];
 
         let fb_standard_config = {};
         let fb_form_order = [];
@@ -8153,6 +8353,39 @@
         function fb_toggleQrEnable(checked) {
             localStorage.setItem('identify_qr_enabled', checked ? 'true' : 'false');
             showToast(checked ? '<span class="material-symbols-outlined text-[18px] mr-2" style="font-variation-settings: \'FILL\' 1; vertical-align: middle;">qr_code_2</span> QR Code Saving Enabled' : '<span class="material-symbols-outlined text-[18px] mr-2" style="font-variation-settings: \'FILL\' 1; vertical-align: middle;">qr_code_2</span> QR Code Saving Disabled');
+            
+            if (checked && !localStorage.getItem('identify_qr_fields')) {
+                let savedFields = ['id'];
+                fb_form_order.forEach(id => {
+                    let f = null;
+                    const isStandard = FB_STANDARD_FIELDS.some(sf => sf.id === id);
+                    if (isStandard) {
+                        const stdField = FB_STANDARD_FIELDS.find(sf => sf.id === id);
+                        const config = fb_standard_config[id] || { enabled: true };
+                        if (!config.enabled) return;
+                        f = { id: id, type: stdField.type };
+                    } else {
+                        f = fb_fields.find(cf => cf.id === id);
+                    }
+                    if (f && f.type !== 'section' && f.type !== 'image' && id !== 'photo') {
+                        savedFields.push(f.id);
+                    }
+                });
+                localStorage.setItem('identify_qr_fields', JSON.stringify(savedFields));
+            }
+            fb_renderForm();
+        }
+
+        function fb_toggleFieldQr(id) {
+            let savedFields = JSON.parse(localStorage.getItem('identify_qr_fields') || '["id"]');
+            if (savedFields.includes(id)) {
+                savedFields = savedFields.filter(f => f !== id);
+            } else {
+                savedFields.push(id);
+            }
+            if (savedFields.length === 0) savedFields = ['id']; // ensure at least one field is selected
+            localStorage.setItem('identify_qr_fields', JSON.stringify(savedFields));
+            fb_renderForm();
         }
 
         function fb_resetBuilderView(silent = false) {
@@ -8316,6 +8549,8 @@
             const allowStandard = fb_filter_mode === 'all' || fb_filter_mode === 'standard' || fb_filter_mode === 'required';
             const allowCustom = fb_filter_mode === 'all' || fb_filter_mode === 'custom' || fb_filter_mode === 'required';
             let renderedCount = 0;
+            const qrEnabled = localStorage.getItem('identify_qr_enabled') === 'true';
+            const qrFields = JSON.parse(localStorage.getItem('identify_qr_fields') || '["id"]');
 
             // UNIFIED RENDER LOOP
             if (Array.isArray(fb_form_order)) fb_form_order.forEach((id, orderIndex) => {
@@ -8349,6 +8584,11 @@
                         </div>
                     </div>
                     <div class="flex items-center justify-end gap-2 border-t border-slate-50 pt-3">
+                        ${qrEnabled && effectiveType !== 'image' && field.id !== 'photo' && effectiveType !== 'section' ? `
+                        <button onclick="fb_toggleFieldQr('${field.id}')" class="w-9 h-9 rounded-full border-2 transition active:scale-95 hover:shadow-sm ${qrFields.includes(field.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-slate-200 text-slate-400 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-500 hover:border-emerald-200'}" title="Include in QR Code">
+                            <i class="fa-solid fa-qrcode text-[11px]"></i>
+                        </button>
+                        ` : ''}
                         <button onclick="fb_openStandardEditor('${field.id}')" class="w-9 h-9 rounded-full border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 hover:shadow-sm transition active:scale-95" title="Edit">
                             <i class="fa-solid fa-pen text-xs"></i>
                         </button>
@@ -8392,6 +8632,11 @@
                             </div>
                         </div>
                         <div class="mt-4 flex items-center justify-end gap-2 border-t border-slate-50 pt-3">
+                            ${qrEnabled && field.type !== 'image' && field.type !== 'section' ? `
+                            <button onclick="fb_toggleFieldQr('${field.id}')" class="w-9 h-9 rounded-full border-2 transition active:scale-95 hover:shadow-sm ${qrFields.includes(field.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-slate-200 text-slate-400 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-500 hover:border-emerald-200'}" title="Include in QR Code">
+                                <i class="fa-solid fa-qrcode text-[11px]"></i>
+                            </button>
+                            ` : ''}
                             <button onclick="fb_openEditor('${field.id}')" class="w-9 h-9 rounded-full border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 hover:shadow-sm transition active:scale-95" title="Edit">
                                 <i class="fa-solid fa-pen text-xs"></i>
                             </button>
@@ -9093,6 +9338,11 @@
                 }
             }
         });
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js');
+        }
     </script>
 </body>
 
