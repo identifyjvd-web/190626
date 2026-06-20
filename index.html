@@ -2496,6 +2496,8 @@
                         errMsg = "The email address is invalid.";
                     } else if (error.code === 'auth/user-not-found') {
                         errMsg = "No account found with this email.";
+                    } else if (error.code) {
+                        errMsg = `${error.message} (${error.code})`;
                     }
                     if (errorEl) {
                         errorEl.innerText = errMsg;
@@ -10005,139 +10007,6 @@
     }
     </script>
 
-    <!-- PWA Install Prompt Bottom Sheet (Android/Chrome) -->
-    <div id="pwa-install-overlay" class="fixed inset-0 z-[12000] hidden items-end justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-200">
-        <div class="w-full max-w-[380px] bg-white rounded-[28px] p-6 shadow-2xl border border-slate-100 flex flex-col items-center text-center animate-in slide-in-from-bottom-10 duration-300 mb-2">
-            <div class="w-[72px] h-[72px] rounded-[22px] bg-emerald-50 border border-emerald-100 flex items-center justify-center overflow-hidden mb-4 shadow-sm">
-                <img src="./idapplogo.png" class="w-full h-full object-cover">
-            </div>
-            <h3 class="text-[17px] font-black text-slate-800 leading-snug">Install IDentify App</h3>
-            <p class="text-sm font-semibold text-slate-500 mt-2 px-2">Install this app on your home screen for quick offline access, smooth animations, and a full-screen experience.</p>
-            
-            <!-- Manual Install Instructions (Shown when beforeinstallprompt is not supported) -->
-            <div id="pwa-manual-instructions" class="w-full bg-slate-50 rounded-2xl p-4 text-left space-y-3 mt-4 text-sm font-semibold text-slate-700 border border-slate-100 hidden">
-                <div class="flex items-center gap-3">
-                    <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center shrink-0">1</span>
-                    <span>Tap the **Browser Menu** (three dots <i class="fa-solid fa-ellipsis-vertical text-emerald-600"></i>) at the top-right.</span>
-                </div>
-                <div class="flex items-center gap-3">
-                    <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center shrink-0">2</span>
-                    <span>Select **Install App** or **Add to Home screen** <i class="fa-regular fa-square-plus text-emerald-600"></i>.</span>
-                </div>
-            </div>
-
-            <div class="flex flex-col gap-2 w-full mt-6">
-                <button id="pwa-install-btn" class="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 py-3.5 text-[15px] font-extrabold text-white shadow-sm flex items-center justify-center gap-2 transition">
-                    <i class="fa-solid fa-download text-sm"></i> Install Now
-                </button>
-                <button id="pwa-cancel-btn" class="w-full rounded-2xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 py-3 text-[14px] font-bold text-slate-600 transition">
-                    Maybe Later
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- iOS Install Help Sheet -->
-    <div id="ios-install-overlay" class="fixed inset-0 z-[12000] hidden items-end justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-200">
-        <div class="w-full max-w-[380px] bg-white rounded-[28px] p-6 shadow-2xl border border-slate-100 flex flex-col items-center text-center animate-in slide-in-from-bottom-10 duration-300 mb-2">
-            <div class="w-[72px] h-[72px] rounded-[22px] bg-emerald-50 border border-emerald-100 flex items-center justify-center overflow-hidden mb-4 shadow-sm">
-                <img src="./idapplogo.png" class="w-full h-full object-cover">
-            </div>
-            <h3 class="text-[17px] font-black text-slate-800 leading-snug">Install IDentify on iPhone</h3>
-            <p class="text-sm font-semibold text-slate-500 mt-2 px-2">To install this app on your iPhone home screen:</p>
-            <div class="w-full bg-slate-50 rounded-2xl p-4 text-left space-y-3 mt-4 text-sm font-semibold text-slate-700 border border-slate-100">
-                <div class="flex items-center gap-3">
-                    <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center shrink-0">1</span>
-                    <span>Tap the **Share** button <i class="fa-solid fa-square-share-nodes text-emerald-600"></i> in Safari.</span>
-                </div>
-                <div class="flex items-center gap-3">
-                    <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center shrink-0">2</span>
-                    <span>Scroll down and tap **Add to Home Screen** <i class="fa-regular fa-square-plus text-emerald-600"></i>.</span>
-                </div>
-            </div>
-            <button id="ios-cancel-btn" class="w-full rounded-2xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 py-3 text-[14px] font-bold text-slate-600 transition mt-5">
-                Got It
-            </button>
-        </div>
-    </div>
-
-    <script>
-        let pwaDeferredPrompt = null;
-
-        function showPwaInstallOverlay() {
-            const pwaOverlay = document.getElementById('pwa-install-overlay');
-            const installBtn = document.getElementById('pwa-install-btn');
-            const manualInstructions = document.getElementById('pwa-manual-instructions');
-            
-            if (!pwaOverlay) return;
-
-            if (pwaDeferredPrompt) {
-                if (installBtn) installBtn.classList.remove('hidden');
-                if (manualInstructions) manualInstructions.classList.add('hidden');
-            } else {
-                if (installBtn) installBtn.classList.add('hidden');
-                if (manualInstructions) manualInstructions.classList.remove('hidden');
-            }
-
-            pwaOverlay.classList.remove('hidden');
-            pwaOverlay.classList.add('flex');
-        }
-
-        window.addEventListener('beforeinstallprompt', (e) => {
-            // Prevent Chrome from automatically showing its default install banner
-            e.preventDefault();
-            // Stash the event so it can be triggered later.
-            pwaDeferredPrompt = e;
-            
-            // Show our custom install bottom sheet immediately
-            showPwaInstallOverlay();
-        });
-
-        document.addEventListener('DOMContentLoaded', () => {
-            const installBtn = document.getElementById('pwa-install-btn');
-            const cancelBtn = document.getElementById('pwa-cancel-btn');
-            const pwaOverlay = document.getElementById('pwa-install-overlay');
-
-            if (installBtn) {
-                installBtn.addEventListener('click', async () => {
-                    if (pwaOverlay) {
-                        pwaOverlay.classList.add('hidden');
-                        pwaOverlay.classList.remove('flex');
-                    }
-                    if (pwaDeferredPrompt) {
-                        pwaDeferredPrompt.prompt();
-                        const { outcome } = await pwaDeferredPrompt.userChoice;
-                        console.log(`User choice: ${outcome}`);
-                        pwaDeferredPrompt = null;
-                    }
-                });
-            }
-
-            if (cancelBtn) {
-                cancelBtn.addEventListener('click', () => {
-                    if (pwaOverlay) {
-                        pwaOverlay.classList.add('hidden');
-                        pwaOverlay.classList.remove('flex');
-                    }
-                    sessionStorage.setItem('pwa_install_dismissed', 'true');
-                });
-            }
-
-
-
-            const iosCancelBtn = document.getElementById('ios-cancel-btn');
-            if (iosCancelBtn) {
-                iosCancelBtn.addEventListener('click', () => {
-                    const iosOverlay = document.getElementById('ios-install-overlay');
-                    if (iosOverlay) {
-                        iosOverlay.classList.add('hidden');
-                        iosOverlay.classList.remove('flex');
-                    }
-                    sessionStorage.setItem('ios_install_dismissed', 'true');
-                });
-            }
-        });
-    </script>
 </body>
 
 </html>
