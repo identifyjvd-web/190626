@@ -1650,7 +1650,7 @@
                             <i data-lucide="log-in" class="w-5 h-5"></i> Login
                         </button>
                         
-                        <div class="mt-4 text-center">
+                        <div id="forgot-password-container" class="mt-4 text-center hidden">
                             <button type="button" onclick="showForgotFields(true)" class="text-sm font-semibold text-emerald-600 hover:text-emerald-700 transition">
                                 Forgot Password?
                             </button>
@@ -1692,13 +1692,14 @@
                 </div>
 
                 <!-- Footer -->
-                <div class="mt-5 flex items-center justify-between">
-                    <div class="flex items-center shrink-0 gap-1.5">
-                        <i class="fa-solid fa-id-card text-emerald-600 text-[12px]"></i>
-                        <span class="text-[11px] font-black tracking-widest text-emerald-600">IDentify</span>
+                <div class="mt-5 relative w-full pb-2 flex flex-col items-center justify-center">
+                    <div class="flex items-center gap-1.5">
+                        <i class="fa-solid fa-id-card text-emerald-600 text-[13px]"></i>
+                        <span class="text-[12px] font-black tracking-widest text-emerald-600">IDentify</span>
                     </div>
-                    <div class="flex gap-2">
-                        <span class="text-[10px] font-bold tracking-[0.12em] text-slate-300 uppercase"><span
+                    <div class="text-[10px] font-bold tracking-widest text-emerald-500 uppercase mt-0.5">By: Javed Ansari</div>
+                    <div class="absolute right-0 bottom-2">
+                        <span class="text-[9px] font-bold tracking-[0.12em] text-slate-300 uppercase"><span
                                 id="login-app-version">JVD 1.04.26</span></span>
                     </div>
                 </div>
@@ -2334,62 +2335,6 @@
                         }
                     } else {
                         if (visibilityLogoutTimer) {
-                            clearTimeout(visibilityLogoutTimer);
-                            visibilityLogoutTimer = null;
-                        }
-                        resetAutoLogoutTimer();
-                    }
-                });
-            }
-            function maybeFlushPendingHighlight() {
-                if (!pendingHighlightId) return;
-                const modal = document.getElementById('custom-modal');
-                if (modal && !modal.classList.contains('hidden')) return;
-                const id = pendingHighlightId;
-                pendingHighlightId = null;
-                highlightRecord(id);
-            }
-            async function submitLogin() {
-                const userId = (document.getElementById('login-user-id').value || '').trim();
-                const password = (document.getElementById('login-password').value || '').trim();
-                const errorEl = document.getElementById('login-error');
-                const btn = document.getElementById('login-submit-btn');
-                if (errorEl) errorEl.classList.add('hidden');
-                
-                if (!userId) {
-                    if (errorEl) {
-                        errorEl.innerText = "Please enter your Email/User ID.";
-                        errorEl.classList.remove('hidden');
-                    }
-                    return;
-                }
-
-                if (btn) {
-                    btn.disabled = true;
-                    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin w-5 h-5 flex items-center justify-center"></i> Authenticating...';
-                }
-                
-                try {
-                    if (!password) {
-                        throw new Error("Password is required for email login.");
-                    }
-
-                    // Await fetching the latest school config from Firebase to ensure correct credentials on new devices
-                    if (window.db && window.firebaseAPI) {
-                        try {
-                            await fetchSystemConfigFromFirebase();
-                        } catch (e) {
-                            console.warn("Could not fetch school config from Firebase on login:", e);
-                        }
-                    }
-
-                    let authUser = null;
-                    
-                    // Local level school login with hashed password
-                    if (schoolConfig && schoolConfig.loginId && schoolConfig.loginId.toLowerCase() === userId.toLowerCase()) {
-                        const savedPass = schoolConfig.loginEnc ? decryptLocal(schoolConfig.loginEnc) : schoolConfig.loginPassword;
-                        if (savedPass && savedPass === password) {
-                            authUser = { userId: schoolConfig.loginId, name: schoolConfig.name || 'School', role: 'school', email: schoolConfig.loginId };
                             saveAuthUser(authUser); // Save to localStorage FIRST to prevent onAuthStateChanged race condition
                             
                             // Sign in anonymously to Firebase Auth so Firestore and Storage operations are authenticated
@@ -2425,6 +2370,16 @@
                         errorEl.innerText = error.message;
                         errorEl.classList.remove('hidden');
                     }
+                    if (userId.toLowerCase() === 'admin' || userId.toLowerCase() === 'identify.jvd@gmail.com') {
+                        adminFailedAttempts++;
+                        if (adminFailedAttempts >= 2) {
+                            const forgotContainer = document.getElementById('forgot-password-container');
+                            if (forgotContainer) forgotContainer.classList.remove('hidden');
+                        }
+                    } else {
+                        const forgotContainer = document.getElementById('forgot-password-container');
+                        if (forgotContainer) forgotContainer.classList.add('hidden');
+                    }
                 } finally {
                     if (btn) {
                         btn.disabled = false;
@@ -2435,6 +2390,7 @@
             }
             
             let forgotPasswordTimer = null;
+            let adminFailedAttempts = 0;
 
             function showForgotFields(show) {
                 const normalFields = document.getElementById('login-normal-fields');
@@ -4631,18 +4587,10 @@
                     const deleted = findRecordById(db, id);
                     if (deleted) {
                         addActivity('DELETE', deleted);
-                        if (currentUser && currentUser.userId === 'admin') {
-                            deleted.isDeleted = true;
-                            deleted.verified = 'Returned';
-                            serverCallSilent('updateRecord', [deleted], ()=>{}, ()=>{});
-                            showToast('Record Returned to School');
-                        } else {
-                            db = db.filter(r => r.id !== id);
-                            
-                            try { if (window.idbDelete) idbDelete(IDB_STORE_RECORDS, id).catch(()=>{}); } catch(e){}
-                            serverCallSilent('deleteRecord', [id], ()=>{}, ()=>{});
-                            showToast('Record Deleted');
-                        }
+                        db = db.filter(r => r.id !== id);
+                        try { if (window.idbDelete) idbDelete(IDB_STORE_RECORDS, id).catch(()=>{}); } catch(e){}
+                        serverCallSilent('deleteRecord', [id], ()=>{}, ()=>{});
+                        showToast('Record Deleted');
                         renderHomeAnalysis();
                         filterRecords();
                     } else {
@@ -5701,7 +5649,7 @@
                         }
                     }
                     if (deleteBtn) {
-                        if (currentUser && currentUser.userId === 'admin') {
+                        if ((currentUser && currentUser.userId === 'admin') || activeStatusFilter === 'unverified') {
                             deleteBtn.classList.remove('hidden');
                         } else {
                             deleteBtn.classList.add('hidden');
@@ -5850,6 +5798,7 @@
                     idsToDelete.forEach(id => {
                         db = db.filter(r => String(r.id) !== String(id));
                         try { if (window.idbDelete) idbDelete(IDB_STORE_RECORDS, id).catch(()=>{}); } catch(e){}
+                        serverCallSilent('deleteRecord', [id], ()=>{}, ()=>{});
                     });
 
                     
@@ -6304,7 +6253,14 @@
             }
 
             function buildDataInformationHtml() {
-                const info = getDataInfoStats(db);
+                let dataToAnalyze = db;
+                if (currentUser && currentUser.userId === 'admin') {
+                    dataToAnalyze = db.filter(r => {
+                        const isReturned = (String(r.verified).toLowerCase() === 'returned' || String(r.status).toLowerCase() === 'returned' || r.returned === true || String(r.returned).toLowerCase() === 'true');
+                        return (r.verified === 'Completed' || r.verified === true || String(r.verified).toLowerCase() === 'true') && !isReturned;
+                    });
+                }
+                const info = getDataInfoStats(dataToAnalyze);
                 const classRows = info.classes.length
                     ? info.classes.map(stats => renderDataInfoRow(stats)).join('')
                     : '<tr><td colspan="5" class="px-3 py-8 text-center text-slate-400 text-sm font-bold bg-white">No data found</td></tr>';
@@ -6519,7 +6475,6 @@
                                 </div>
                             </div>
                         </div>
-
                         ${(isPreviewVerified || (rec.verified === 'Completed' && !isReturned)) ? 
                             (currentUser && currentUser.userId === 'admin' && rec.verified !== 'Completed' ? `
                             <!-- Admin Verified Actions Bar -->
@@ -7280,17 +7235,25 @@
                 let orderedClasses = [];
                 let counts = {};
 
+                let dbToCount = db;
+                if (currentUser && currentUser.userId === 'admin') {
+                    dbToCount = db.filter(r => {
+                        const isReturned = (String(r.verified).toLowerCase() === 'returned' || String(r.status).toLowerCase() === 'returned' || r.returned === true || String(r.returned).toLowerCase() === 'true');
+                        return (r.verified === 'Completed' || r.verified === true || String(r.verified).toLowerCase() === 'true') && !isReturned;
+                    });
+                }
+
                 if (Array.isArray(classesOverride) && classesOverride.length > 0) {
                     // Use the list provided from the database
                     orderedClasses = classesOverride;
                     // Also need counts from current db for UI numbers
-                    db.forEach(record => {
+                    dbToCount.forEach(record => {
                         const className = (record && record.sclass ? String(record.sclass).trim() : '');
                         if (className) counts[className] = (counts[className] || 0) + 1;
                     });
                 } else {
                     // Default behavior: extract from current db array
-                    counts = db.reduce((acc, record) => {
+                    counts = dbToCount.reduce((acc, record) => {
                         const className = (record && record.sclass ? String(record.sclass).trim() : '');
                         if (!className) return acc;
                         acc[className] = (acc[className] || 0) + 1;
@@ -7304,7 +7267,7 @@
                 }
 
                 const items = [
-                    { value: 'all', label: 'All Class', count: db.length }
+                    { value: 'all', label: 'All Class', count: dbToCount.length }
                 ].concat(
                     orderedClasses.map(name => ({
                         value: name,
@@ -9870,7 +9833,8 @@
                 exportData.push(row);
                 
                 const safeName = ((rec.studentName || rec.name || rec.title || 'Unknown') + '').replace(/[^a-zA-Z0-9]/g, '_');
-                const baseFileName = `${safeName}_${rec.id.substring(rec.id.length - 4)}`;
+                const safeId = String(rec.id || 'NID');
+                const baseFileName = `${safeName}_${safeId.substring(Math.max(0, safeId.length - 4))}`;
                 
                 if (includePhotos) {
                     let photoUrl = rec.docUrl || rec.photoData;
@@ -10013,8 +9977,6 @@
             
             let importCount = 0;
             const schoolId = currentUser ? currentUser.userId : 'anonymous';
-            const { collection, addDoc } = window.firebaseAPI || {};
-            if (!collection || !addDoc) throw new Error('Firebase functions not initialized properly.');
             
             for (let i = 0; i < ie_importParsedData.length; i++) {
                 const row = ie_importParsedData[i];
@@ -10022,8 +9984,7 @@
                     createdAt: Date.now(),
                     schoolId: schoolId,
                     deviceId: localStorage.getItem('device_id') || 'web-import',
-                    syncStatus: 'synced',
-                    status: 'pending'
+                    syncStatus: 'synced'
                 };
                 
                 let hasPhoto = false;
@@ -10048,19 +10009,21 @@
                     record.status = 'pending';
                 }
                 
-                await addDoc(collection(window.db, "records"), record);
+                record.id = generateId();
+                db.unshift(record);
+                serverCallSilent('addRecord', [record], ()=>{}, ()=>{});
                 importCount++;
             }
             
+            saveToLocal();
+            filterRecords();
+            renderHomeAnalysis();
+            
             showToast(`Successfully imported ${importCount} records.`);
             closeImportExportModal();
-            
-            if (typeof loadAllData === 'function') {
-                loadAllData();
-            }
         } catch(err) {
             console.error(err);
-            showToast("Error during import: " + err.message, true);
+            showToast("Import failed: " + err.message, true);
         } finally {
             btn.innerHTML = origHTML;
             btn.disabled = false;
@@ -10071,4 +10034,3 @@
 </body>
 
 </html>
-
