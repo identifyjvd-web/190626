@@ -2384,8 +2384,10 @@
 
                     let authUser = null;
                     
-                    // Local level school login with hashed password
-                    if (schoolConfig && schoolConfig.loginId && schoolConfig.loginId.toLowerCase() === userId.toLowerCase()) {
+                    const isAdminId = (userId.toLowerCase() === 'admin' || userId.toLowerCase() === 'identify.jvd@gmail.com');
+                    
+                    // If Admin, skip local school login entirely so they don't get trapped as a school if schoolConfig matches
+                    if (!isAdminId && schoolConfig && schoolConfig.loginId && schoolConfig.loginId.toLowerCase() === userId.toLowerCase()) {
                         const savedPass = schoolConfig.loginEnc ? decryptLocal(schoolConfig.loginEnc) : schoolConfig.loginPassword;
                         if (savedPass && savedPass === password) {
                             authUser = { userId: schoolConfig.loginId, name: schoolConfig.name || 'School', role: 'school', email: schoolConfig.loginId };
@@ -2404,7 +2406,11 @@
 
                     if (!authUser) {
                         // Fallback to Firebase for Admin/Others
-                        const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, userId, password);
+                        let firebaseLoginId = userId;
+                        if (userId.toLowerCase() === 'admin') {
+                            firebaseLoginId = 'identify.jvd@gmail.com'; // Map 'admin' to the actual admin email for Firebase auth
+                        }
+                        const userCredential = await window.firebaseAPI.signInWithEmailAndPassword(window.auth, firebaseLoginId, password);
                         const user = userCredential.user;
                         
                         if (user.email && (user.email.toLowerCase() === 'admin' || user.email.toLowerCase() === 'identify.jvd@gmail.com')) {
