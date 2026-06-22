@@ -2721,6 +2721,14 @@
                     });
                 });
             }
+            function hideSplashScreen() {
+                const splash = document.getElementById('initial-splash-screen');
+                if (splash && !splash.classList.contains('hiding')) {
+                    splash.classList.add('hiding');
+                    splash.style.opacity = '0';
+                    setTimeout(() => splash.remove(), 500);
+                }
+            }
             let appBooted = false;
             function requireLoginAndBoot() {
                 const savedUser = loadAuthUser();
@@ -2742,6 +2750,7 @@
                             currentUser = savedUser;
                             updateCurrentUserUi();
                             showLoginOverlay(false);
+                            hideSplashScreen();
                             
                             if (!appBooted) {
                                 appBooted = true;
@@ -2756,6 +2765,7 @@
                             currentUser = null;
                             updateCurrentUserUi();
                             showLoginOverlay(true);
+                            hideSplashScreen();
                             if (appBooted) {
                                 window.location.reload();
                             }
@@ -2766,6 +2776,7 @@
                         currentUser = savedUser;
                         updateCurrentUserUi();
                         showLoginOverlay(false);
+                        hideSplashScreen();
                         
                         const sc = loadSchoolConfig();
                         const pref = (sc.name || 'System').split(' ').map(w => w[0]).join('').toUpperCase();
@@ -2777,6 +2788,7 @@
                         currentUser = null;
                         updateCurrentUserUi();
                         showLoginOverlay(true);
+                        hideSplashScreen();
                     }
                 }
             }
@@ -2995,13 +3007,7 @@
                     setupPullToRefresh();
                     setupEventDelegation();
 
-                    setTimeout(() => {
-                        const splash = document.getElementById('initial-splash-screen');
-                        if (splash) {
-                            splash.style.opacity = '0';
-                            setTimeout(() => splash.remove(), 500);
-                        }
-                    }, 800);
+                    // Splash screen will be hidden by requireLoginAndBoot after auth state check
 
                     // Fallback binding for environments where inline onclick is unreliable.
                     const homeBtn = document.getElementById('btn-tab-home');
@@ -3211,25 +3217,8 @@
             }
 
             async function uploadVerifiedRecordPhoto(record) {
-                let rec = { ...record };
-                let dataUrl = rec.photoData && String(rec.photoData).startsWith('data:image') ? rec.photoData : '';
-                if (!dataUrl && rec.id) {
-                    const attach = await idbGet(IDB_STORE_ATTACH, `${rec.id}::photo`).catch(() => null);
-                    if (attach && attach.blob) dataUrl = await blobToDataUrl(attach.blob);
-                }
-                if (!dataUrl) return rec;
-                const payload = dataUrlToUploadPayload(dataUrl, rec.fileName || `${rec.id}_${rec.studentName || 'photo'}.jpg`, rec.docMimeType || 'image/jpeg', `${rec.id}_${rec.studentName || 'photo'}`.replace(/\s+/g, '_'));
-                return new Promise((resolve, reject) => {
-                    serverCallSilent('uploadRecordDocument', [payload], (meta) => {
-                        if (meta) {
-                            rec.docFileId = meta.fileId || rec.docFileId || '';
-                            rec.docUrl = meta.previewUrl || meta.url || rec.docUrl || '';
-                            rec.docMimeType = meta.mimeType || rec.docMimeType || '';
-                            rec.docSize = meta.size || rec.docSize || '';
-                        }
-                        resolve(rec);
-                    }, (err) => reject(new Error('Photo upload failed: ' + (err ? err.message : 'Unknown error'))));
-                });
+                // Firebase Storage charges money, so we bypass it and rely on Firestore photoData (base64)
+                return { ...record };
             }
 
             async function syncVerifiedRecordToGoogle(recordOrId) {
@@ -5159,7 +5148,7 @@
                         const canvas = document.createElement('canvas');
                         let width = img.width;
                         let height = img.height;
-                        const max = 1200;
+                        const max = 800; // Reduced max dimension to ensure small base64 size
                         if (width > height && width > max) {
                             height *= max / width;
                             width = max;
@@ -5172,18 +5161,14 @@
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, width, height);
                         
-                        let dataUrl;
-                        if (file.type === 'image/png') {
-                            dataUrl = canvas.toDataURL('image/png');
-                        } else {
-                            dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-                        }
+                        // Always convert to JPEG with 0.6 quality for maximum compression to fit in Firestore 1MB limit
+                        let dataUrl = canvas.toDataURL('image/jpeg', 0.6);
 
                         // Convert back to file-like object for metadata
                         fetch(dataUrl)
                             .then(res => res.blob())
                             .then(blob => {
-                                const compressedFile = new File([blob], file.name, { type: 'image/jpeg' });
+                                const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".jpg", { type: 'image/jpeg' });
                                 callback(compressedFile, dataUrl);
                             });
                     };
@@ -7712,23 +7697,11 @@
 
             function saveAndNew(skipServerFinalize = false) {
                 const firstName = (previewRecord && previewRecord.studentName) ? previewRecord.studentName.trim().split(' ')[0] : 'Record';
-                const fullName = (previewRecord && previewRecord.studentName) ? previewRecord.studentName.trim() : 'Student';
-                let finalId = (previewRecord && previewRecord.id) ? previewRecord.id : 'NEW';
-                if (finalId.startsWith('draft_')) {
-                    const schoolInitials = (schoolConfig.name || "DPS").trim().split(/\s+/).map(w => w[0]).join('').toUpperCase();
-                    const year = new Date().getFullYear().toString().slice(-2);
-                    finalId = `${schoolInitials || "DPS"}${year}DRAFT`;
-                }
                 const isVerified = previewRecord && (previewRecord.verified === true || String(previewRecord.verified).toLowerCase() === 'true');
                 const msgText = isVerified ? 'Saved & Verified Successfully' : 'Saved Successfully';
 
-                // Show INSTANT premium status card as requested
-                showStatusCard(`<span class="text-rose-500 font-black tracking-tight uppercase" style="font-size: 16px;">${fullName}</span>`, `<span class="text-emerald-600 font-bold">${msgText}</span>`, { 
-                    tone: 'success', 
-                    progress: 100, 
-                    autoHideMs: 2500,
-                    dismissible: true 
-                });
+                // Use toast for instant feedback instead of blocking the screen
+                showToast(msgText);
 
                 // Background Finalization
                 if (!skipServerFinalize && previewRecord && previewRecord.id) {
@@ -9632,7 +9605,8 @@
                     height: 800,
                 });
                 if (canvas) {
-                    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                    // Use 0.6 quality to ensure base64 image fits comfortably in Firestore 1MB limit
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
                     photoData = dataUrl;
                     showPhotoPreview(photoData);
                     if (typeof queueServerDraftSync === 'function') queueServerDraftSync();
