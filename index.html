@@ -2310,6 +2310,7 @@
                     logoutUser(true);
                 }, AUTO_LOGOUT_MS);
             }
+            let visibilityLogoutTimer = null;
             function setupAutoLogoutTracking() {
                 const events = ['click', 'keydown', 'input', 'mousemove', 'touchstart', 'scroll'];
                 let lastResetTime = 0;
@@ -2322,6 +2323,22 @@
                             resetAutoLogoutTimer();
                         }
                     }, { passive: true });
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'hidden') {
+                        if (currentUser) {
+                            visibilityLogoutTimer = setTimeout(() => {
+                                logoutUser('Session expired because the app was closed/inactive for 3 minutes.');
+                            }, 3 * 60 * 1000);
+                        }
+                    } else {
+                        if (visibilityLogoutTimer) {
+                            clearTimeout(visibilityLogoutTimer);
+                            visibilityLogoutTimer = null;
+                        }
+                        resetAutoLogoutTimer();
+                    }
                 });
             }
             function maybeFlushPendingHighlight() {
@@ -2815,7 +2832,7 @@
                 if (isAuto) {
                     const errorEl = document.getElementById('login-error');
                     if (errorEl) {
-                        errorEl.innerText = '10 minute inactivity ke baad session logout ho gaya.';
+                        errorEl.innerText = typeof isAuto === 'string' ? isAuto : 'Session expired due to 10 minutes of inactivity.';
                         errorEl.classList.remove('hidden');
                     }
                 }
@@ -9904,7 +9921,12 @@
             
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Zipping...';
             const content = await zip.generateAsync({type:"blob"});
-            saveAs(content, `System_Export_${new Date().toISOString().split('T')[0]}.zip`);
+            const downloadLink = document.createElement("a");
+            downloadLink.href = URL.createObjectURL(content);
+            downloadLink.download = `System_Export_${new Date().toISOString().split('T')[0]}.zip`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
             
             showToast("Export Completed Successfully");
         } catch(err) {
@@ -10026,7 +10048,7 @@
                     record.status = 'pending';
                 }
                 
-                await addDoc(collection(window.firestore, "students"), record);
+                await addDoc(collection(window.db, "records"), record);
                 importCount++;
             }
             
